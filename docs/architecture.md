@@ -1,267 +1,230 @@
 # nano-moe-ep Architecture
 
-## Current Repository State
+## Current Verified Baseline
 
-This repository was inspected on 2026-06-22. Before this documentation pass, the root contained `LICENSE` only. There was no `README.md`, `docs/` directory, source package, test suite, CI configuration, benchmark script, CUDA code, or Python package metadata. Everything below is a design proposal for future work, not a description of existing implementation.
+This repository currently contains a Stage 1 single-process CPU reference implementation and tests. The verified baseline for this documentation pass is:
+
+- Command: `python -m pytest -q`
+- Result: `28 passed in 3.96s`
+- Implemented runtime scope: deterministic synthetic top-1 routing, explicit `RouterOutput`, `TokenLayout`, `ExpertPlacement`, `ReferenceTrace`, a grouped/permuted reference MoE FFN, and an independent token-by-token oracle.
+- Implemented tests cover round-robin routing, explicit routing, one-token input, all tokens routed to one expert, skewed expert counts, non-contiguous input tensors, invalid routing metadata, finite floating weights, inverse permutation, no silent token loss or duplication, determinism, and grouped output compared to the oracle.
+- Not implemented: distributed EP, `torch.distributed`, CUDA/NCCL kernels, transport, `DispatchPlan`, `CombinePlan`, `EPContext`, profiling events, top-2 routing, capacity factor, token dropping, backward-specific logic, or benchmarks.
+
+Everything beyond Stage 1 in this document is a design proposal. It must not be treated as existing implementation.
 
 ## Project Thesis
 
-`nano-moe-ep` is a correctness-first, from-scratch multi-GPU Expert Parallel runtime learning project for Mixture-of-Experts models. The project should make one standalone MoE FFN layer explicit, testable, and measurable: top-k routing, token grouping and permutation, variable-size cross-rank dispatch, local expert computation, cross-rank combine, and unpermute plus weighted reduction. It is not intended to beat production frameworks; its purpose is to implement the essential Expert Parallel data path narrowly enough that correctness, communication cost, routing skew, expert compute, and later overlap can be explained and measured.
-
-## Assumptions
-
-- Development may begin on Windows and CPU.
-- The first complete correctness path is single-process and communication-free.
-- The first distributed implementation targets one Linux host with 2 NVIDIA GPUs.
-- A 4-GPU run is a later validation target, not the first milestone.
-- Multi-node execution, RDMA, InfiniBand, FP8, production deployment, and serving are outside the first project version.
-- The first model target is a standalone MoE FFN block, not a full Transformer.
+`nano-moe-ep` is a correctness-first, from-scratch educational Expert Parallel runtime for Mixture-of-Experts models. Its purpose is to expose the essential MoE EP data path in a small, testable system: top-k routing, token grouping and permutation, variable-size cross-rank dispatch, local expert computation, cross-rank combine, unpermute, and weighted reduction. It is not a DeepEP, Megatron-Core, vLLM, or SGLang clone; it is a narrow systems-learning project that makes correctness invariants and bottlenecks explicit.
 
 ## In Scope
 
-- One MoE FFN forward path with explicit routing, token layout, dispatch, expert compute, combine, unpermute, and weighted reduction.
-- A CPU/reference execution mode that is numerically testable in one process.
-- Metadata structures that make token movement and ownership auditable.
-- Variable token counts per expert and per EP rank.
-- A distributed transport abstraction that can start with PyTorch distributed collectives.
-- Profiling events for routing skew, bytes moved, collective timing, local expert work, and packing/unpacking cost.
-- A strict path from single-process correctness to 2-GPU correctness before any CUDA-side specialization.
+- A standalone MoE FFN layer before any full Transformer integration.
+- Single-process CPU/reference execution with deterministic tests.
+- Explicit routing, layout, placement, dispatch, combine, context, and profiling metadata.
+- Variable token counts per expert and, later, per EP rank.
+- A future 2-GPU PyTorch distributed baseline after the reference path and local dispatch/combine harness are correct.
+- Later measurement of routing skew, packing/permutation cost, communication cost, expert compute, and communication-computation overlap.
 
 ## Out of Scope
 
-- Full LLM or full Transformer architecture.
-- Tensor parallelism, pipeline parallelism, data parallelism, speculative decoding, MoE serving, dynamic expert migration, autoscaling, or production scheduling.
-- Backward propagation in the first end-to-end milestone.
-- Custom CUDA kernels before the reference and 2-GPU PyTorch distributed baselines are correct.
-- Multi-node networking, RDMA, InfiniBand, FP8, or production inference deployment.
-- Copying implementation details from DeepEP, Megatron-Core, vLLM, SGLang, or similar systems.
+- Full LLM training or inference serving.
+- Tensor parallelism, pipeline parallelism, data parallelism, speculative decoding, autoscaling, schedulers, HTTP services, or production control planes.
+- CUDA/NCCL kernels before the 2-GPU PyTorch distributed baseline is correct.
+- Top-2 routing, capacity factor, token dropping, and backward propagation in Stage 1.
+- Multi-node, RDMA, InfiniBand, FP8, or production deployment.
+- Copying implementation code from DeepEP, Megatron-Core, vLLM, SGLang, or similar systems.
 
 ## Layered Architecture
 
 ```text
 +--------------------------------------------------------------+
-| Benchmark and profile harness                                |
+| Tests and correctness oracle                                 |
 +--------------------------------------------------------------+
-| Public MoE FFN layer contract                                |
+| Public MoE FFN reference layer                               |
 +--------------------------------------------------------------+
-| Router: logits, top-k expert ids, top-k weights              |
+| Router: top-k expert ids and routing weights                 |
 +--------------------------------------------------------------+
-| Planning: assignment, placement, dispatch plan, combine plan |
+| Metadata: assignment, layout, placement, dispatch, combine   |
 +--------------------------------------------------------------+
 | Layout: group, permute, pack, unpack, unpermute              |
 +--------------------------------------------------------------+
-| Transport: no-op reference, PyTorch distributed, future CUDA |
+| Transport: reference no-op, future torch.distributed, CUDA   |
 +--------------------------------------------------------------+
-| Local expert MLP execution                                   |
+| Local expert MLP computation                                 |
 +--------------------------------------------------------------+
-| Correctness oracle and invariant checks                      |
+| Profiling and benchmark event records                        |
 +--------------------------------------------------------------+
 ```
 
-The router, planner, layout, local experts, and reducer must be usable without distributed communication. The transport layer owns cross-rank movement. The public MoE FFN layer composes these pieces but should not hide metadata needed for tests and profiling.
+Stage 1 implements only the single-process router, metadata, layout, local expert compute, and oracle parts. The transport and profiling layers are future boundaries.
 
-## End-to-End Data Flow For One MoE Layer
+## One-Layer MoE Data Flow
 
-1. Input activations enter the MoE FFN layer as a token-major activation matrix with a stable original token index for every row.
-2. The router reads activations and produces router logits over the configured expert set.
-3. Top-k selection converts logits into expert assignments and routing weights for each token. The design must represent `k` slots per token even if the first implementation uses `k = 1`.
-4. Expert placement maps each expert id to exactly one owning EP rank for the duration of the forward pass.
-5. Token assignments are grouped by destination EP rank and then by destination expert. Empty groups are valid and must be represented.
-6. The layout layer builds a permutation from original token order to packed dispatch order. It records enough metadata to reverse the permutation after combine.
-7. Dispatch sends variable-size packed token payloads to destination ranks. In reference mode this is a local reorder; in distributed mode this is the only cross-rank communication step for expert inputs.
-8. Each rank runs the local expert MLP for the token slices owned by its local experts. Expert compute receives only local expert ids and packed local token activations.
-9. Combine returns each expert result to the rank that owns the original token position. In reference mode this is a local reorder; in distributed mode this is the return communication step.
-10. The combine planner restores results to original token order and aligns every result with its original token id and top-k slot.
-11. Weighted reduction applies routing weights exactly once per routed result and sums across top-k slots.
-12. Output activations leave the layer in the same token order and hidden size as the input activations.
+1. Input activations enter as `[num_tokens, hidden_dim]`.
+2. The router emits expert ids and routing weights. Stage 1 uses deterministic synthetic top-1 routing only.
+3. `RouterOutput` validates shape `[num_tokens, 1]`, integer expert ids, floating finite weights, and matching token count.
+4. Token assignments are grouped by expert id.
+5. `TokenLayout` records a permutation from original token order to expert-grouped order.
+6. `TokenLayout.inverse_permutation` restores original token order from grouped order.
+7. `expert_counts` and `expert_offsets` describe per-expert token segments, including empty experts.
+8. Stage 1 runs each local expert MLP only on its assigned token slice.
+9. Expert outputs are unpermuted back to original token order.
+10. Routing weights are applied exactly once.
+11. Output activations leave with the same token order and shape as input activations.
+12. The grouped implementation is checked against a token-by-token oracle that does not use layout metadata.
 
-## Proposed Future Package Boundaries
+Future distributed stages insert variable-size dispatch after packing and cross-rank combine before unpermute/reduction.
 
-These package boundaries are proposals only. They should not be created until the corresponding implementation stage needs them.
+## Proposed Module Boundaries
 
-### `nano_moe_ep.moe_ffn`
+### `nano_moe_ep.routing`
 
-- Responsibility: expose the standalone MoE FFN block contract and compose router, planner, layout, transport, expert execution, combine, and reducer.
-- Inputs: input activations, router configuration, expert modules, EP context, execution mode.
-- Outputs: output activations, optional debug metadata, optional profile events.
-- Invariants: output token order matches input token order; top-k weights are applied once; the layer can run with reference transport.
-- Must never own: collective communication details, expert placement mutation policy, benchmark reporting, or CUDA-specialized packing logic.
+- Current responsibility: deterministic synthetic top-1 routing.
+- Future responsibility: top-k router output formatting without owning layout or transport.
+- Inputs: token count or explicit assignment, number of experts.
+- Outputs: `RouterOutput`.
+- Invariants: expert ids are in range; weights are finite; Stage 1 synthetic weights are all `1.0`.
+- Must never own: token permutation, expert execution, dispatch, combine, or distributed communication.
 
-### `nano_moe_ep.router`
+### `nano_moe_ep.types`
 
-- Responsibility: produce router logits, top-k expert ids, and top-k weights.
-- Inputs: token activations, router parameters, top-k configuration.
-- Outputs: `RouterOutput` and token-level assignment candidates.
-- Invariants: every token has exactly `k` routing slots unless the run is explicitly configured to test failure handling; weights are finite; expert ids are in range.
-- Must never own: token packing order, rank communication, expert placement, or expert MLP execution.
-
-### `nano_moe_ep.metadata`
-
-- Responsibility: define conceptual records used across routing, layout, dispatch, combine, context, and profiling.
-- Inputs: values emitted by router, planner, layout, transport, and instrumentation.
-- Outputs: validated metadata objects passed across modules.
-- Invariants: metadata is explicit enough to audit every token movement and reduction contribution.
-- Must never own: tensor computation, distributed collectives, benchmark execution, or policy decisions.
-
-### `nano_moe_ep.placement`
-
-- Responsibility: map global expert ids to EP ranks and local expert slots.
-- Inputs: number of experts, EP world size, rank id, placement policy.
-- Outputs: `ExpertPlacement` and local expert ownership views.
-- Invariants: every expert has exactly one owner during a forward pass; placement is immutable while that pass executes; all ranks agree on placement.
-- Must never own: routing logits, token permutation, transport calls, or expert math.
-
-### `nano_moe_ep.planning`
-
-- Responsibility: convert router assignments and expert placement into dispatch and combine plans.
-- Inputs: `RouterOutput`, `ExpertPlacement`, original token indices, EP context.
-- Outputs: `TokenAssignment`, `DispatchPlan`, and `CombinePlan`.
-- Invariants: no token assignment is dropped; duplicated assignments occur only because top-k requires multiple expert visits; source and destination counts reconcile.
-- Must never own: tensor communication, expert MLP weights, profiler storage, or routing policy.
-
-### `nano_moe_ep.layout`
-
-- Responsibility: build and apply token grouping, permutation, packing, unpacking, and unpermutation.
-- Inputs: input activations, `DispatchPlan`, returned expert activations, `CombinePlan`.
-- Outputs: packed send buffers, unpacked receive buffers, restored token-major outputs before or after weighted reduction depending on the call boundary.
-- Invariants: layout transformations are reversible using recorded metadata; empty expert and rank segments are valid; segment boundaries match the plan.
-- Must never own: route selection, expert placement, collective scheduling, or numerical tolerance policy.
-
-### `nano_moe_ep.transport`
-
-- Responsibility: move packed token payloads and returned expert outputs according to plans.
-- Inputs: packed payloads, variable counts, peer ordering, `EPContext`, transport backend selection.
-- Outputs: received payloads and transport profile events.
-- Invariants: each rank executes collectives in the same order; received counts match planned counts; no payload is interpreted by transport.
-- Must never own: routing, token grouping policy, expert compute, weight application, or correctness oracle decisions.
-
-### `nano_moe_ep.experts`
-
-- Responsibility: run local expert MLP computation on packed token slices.
-- Inputs: local expert activations grouped by expert, local expert parameters, local expert ids.
-- Outputs: local expert outputs in the same packed local order.
-- Invariants: each local expert receives only tokens assigned to that expert; empty expert batches are valid; output shape matches input token count and hidden size.
-- Must never own: dispatch communication, original token ordering, global expert placement, or top-k reduction.
+- Current responsibility: explicit Stage 1 metadata dataclasses.
+- Future responsibility: shared metadata contracts for assignment, layout, dispatch, combine, context, and profiling.
+- Inputs: tensors and immutable placement metadata produced by router/layout/planner layers.
+- Outputs: validated metadata objects.
+- Invariants: metadata must be auditable and must not hide token movement.
+- Must never own: tensor compute kernels, communication, training losses, or benchmark interpretation.
 
 ### `nano_moe_ep.reference`
 
-- Responsibility: provide the single-process correctness path and comparison oracle.
-- Inputs: deterministic inputs, router outputs or seeded router configuration, expert parameters, proposed plans.
-- Outputs: reference outputs, metadata validation results, numerical comparison reports.
-- Invariants: no distributed communication is required; execution is deterministic under a fixed seed; every distributed result can be compared to this path within tolerance.
-- Must never own: production transport, CUDA-specific kernels, benchmark interpretation, or placement mutation.
+- Current responsibility: Stage 1 grouped/permuted reference MoE FFN and independent token-by-token oracle.
+- Future responsibility: correctness oracle for distributed outputs.
+- Inputs: input activations, `RouterOutput`, local expert MLPs.
+- Outputs: output activations and `ReferenceTrace`.
+- Invariants: no distributed initialization is required; output matches the oracle within tolerance.
+- Must never own: production transport, distributed scheduling, CUDA kernels, or serving logic.
 
-### `nano_moe_ep.profiling`
+### Future `planning`
 
-- Responsibility: collect structured events for timing, counts, bytes, skew, and phase boundaries.
-- Inputs: phase names, ranks, sizes, timestamps, counters, backend labels.
-- Outputs: `ProfileEvent` records and later benchmark summaries.
-- Invariants: profile events are descriptive and do not change execution behavior; units are explicit; measurements are labeled with hardware and backend assumptions.
-- Must never own: routing choices, communication implementation, expert math, or correctness pass/fail decisions.
+- Responsibility: convert routing plus placement into `TokenAssignment`, `DispatchPlan`, and `CombinePlan`.
+- Inputs: `RouterOutput`, `TokenLayout`, `ExpertPlacement`, rank/world metadata.
+- Outputs: auditable send/receive and return plans.
+- Invariants: all assignments are represented exactly once for top-1; later top-k duplication is explicit.
+- Must never own: collectives, expert MLP parameters, or router policy.
 
-## Metadata Design
+### Future `layout`
 
-The following structures are conceptual contracts, not implementation code.
+- Responsibility: pack and unpack tensors according to plans.
+- Inputs: token activations and planning metadata.
+- Outputs: packed send buffers and restored output buffers.
+- Invariants: pack/unpack round trips preserve token identity and segment boundaries.
+- Must never own: routing decisions, communication backend, or expert ownership policy.
+
+### Future `transport`
+
+- Responsibility: move already-packed buffers according to dispatch/combine plans.
+- Inputs: packed tensors, counts, peer order, context.
+- Outputs: received tensors and transport profile events.
+- Invariants: all ranks agree on collective order and counts.
+- Must never own: route selection, weight application, expert compute, or correctness comparison.
+
+### Future `profiling`
+
+- Responsibility: record phase timings, token counts, bytes, skew, and backend labels.
+- Inputs: phase boundaries and counters.
+- Outputs: `ProfileEvent` records.
+- Invariants: profiling must not alter correctness behavior.
+- Must never own: execution policy or pass/fail correctness decisions.
+
+## Metadata Concepts
 
 ### RouterOutput
 
-- Purpose: represent router decisions before any token movement.
-- Fields: token count, expert count, top-k value, logits summary or optional logits tensor reference, selected expert ids per token and slot, routing weights per token and slot, optional router diagnostics.
-- Invariants: selected expert ids are valid; weights are finite; shape records match token count and top-k; weight normalization rule is explicit.
-- Never includes: dispatch rank ordering, packed buffer offsets, transport handles, or expert placement mutation.
+- Current status: implemented.
+- Concept: selected expert ids and routing weights.
+- Current fields: `expert_indices` with shape `[num_tokens, 1]`; `weights` with shape `[num_tokens, 1]`.
+- Invariants: integer expert ids; floating finite weights; matching first dimension; Stage 1 router-generated weights are unit weights.
 
 ### TokenAssignment
 
-- Purpose: represent one routed visit from one token to one expert.
-- Fields: original token index, top-k slot index, expert id, routing weight, destination EP rank, optional local expert index.
-- Invariants: one token with `k` routing slots produces exactly `k` assignments; assignment identity is stable through dispatch and combine.
-- Never includes: raw communication buffers, expert parameter tensors, or benchmark summaries.
+- Current status: proposed for Stage 2+.
+- Concept: one routed token visit to one expert.
+- Proposed fields: original token index, top-k slot, expert id, routing weight, owner rank, assignment id.
+- Invariants: assignment identity survives packing, dispatch, combine, and reduction.
+
+### TokenLayout
+
+- Current status: implemented.
+- Concept: local token grouping metadata.
+- Current fields: `permutation`, `inverse_permutation`, `expert_offsets`, `expert_counts`.
+- Invariants: every token appears once; inverse restores original order; offsets match counts; empty experts are valid.
 
 ### DispatchPlan
 
-- Purpose: describe how assignments become packed sends.
-- Fields: source rank, destination rank order, send counts per destination rank, expert segment offsets, packed row order, original token indices, top-k slot indices, assignment ids.
-- Invariants: sum of send counts equals assignment count on the source rank; segment offsets are monotonic; empty destinations and experts are represented explicitly.
-- Never includes: router logits, expert weights, or transport backend implementation details.
+- Current status: proposed for Stage 2+.
+- Concept: variable-size send plan from source rank to destination rank/expert segments.
+- Proposed fields: source rank, destination rank order, send counts, expert segment offsets, packed row order, assignment ids.
+- Invariants: send counts reconcile with assignment count; peer order is deterministic.
 
 ### ExpertPlacement
 
-- Purpose: define immutable expert ownership for one forward pass.
-- Fields: world size, rank id, global expert count, mapping from expert id to owner rank, mapping from expert id to local expert slot on the owning rank, placement policy label.
-- Invariants: every global expert has one owner; all ranks construct the same mapping; placement does not change inside one forward pass.
-- Never includes: token-level routing decisions, packed buffers, performance results, or load-balancing side effects.
+- Current status: implemented in minimal Stage 1 form.
+- Concept: immutable expert ownership metadata.
+- Current fields: `owner_rank_by_expert`; Stage 1 defaults every expert to rank 0.
+- Invariants: each expert has exactly one owner during a forward pass.
 
 ### CombinePlan
 
-- Purpose: describe how expert outputs return to original token ownership and reduction order.
-- Fields: return source and destination rank order, receive counts, assignment ids, original token indices, top-k slot indices, routing weights or stable references to them, output restore order.
-- Invariants: every dispatched assignment has exactly one returned expert result; reduction can group by original token index; routing weights are applied exactly once.
-- Never includes: router training losses, local expert parameters, or transport-specific handles.
+- Current status: proposed for Stage 2+.
+- Concept: return path from expert outputs back to original token ownership.
+- Proposed fields: return peer order, receive counts, assignment ids, original token indices, top-k slots, weight references.
+- Invariants: every dispatched assignment returns exactly one result; weights are applied once.
 
 ### EPContext
 
-- Purpose: hold execution context shared by planning and transport.
-- Fields: execution mode, rank id, world size, device label, dtype policy label, backend label, collective sequence id or phase id, deterministic seed reference.
-- Invariants: all ranks agree on world size, rank mapping, backend, and collective phase ordering for a distributed pass.
-- Never includes: model parameters, token activations, routing logits, or benchmark conclusions.
+- Current status: proposed for Stage 3+.
+- Concept: execution context shared across ranks.
+- Proposed fields: rank id, world size, backend, device label, dtype policy, deterministic seed, collective phase id.
+- Invariants: all ranks agree on world size, peer order, backend, and phase ordering.
 
 ### ProfileEvent
 
-- Purpose: record a measured or counted execution phase.
-- Fields: event name, rank id, phase id, start and end timestamps when measured, token count, byte count, expert id or rank peer when applicable, backend label, units.
-- Invariants: event units are explicit; event names are stable enough to compare across runs; profiling does not affect correctness.
-- Never includes: raw token payloads, secrets, mutable execution policy, or pass/fail correctness status.
+- Current status: proposed for Stage 3+.
+- Concept: structured measurement record.
+- Proposed fields: phase name, rank id, timestamps, token count, byte count, peer/expert id, backend, units.
+- Invariants: measurements are labeled and never change execution behavior.
 
 ## Transport Abstraction
 
-The transport boundary accepts already-packed payloads and a plan. It returns received payloads and count metadata. It must not choose routes, reorder assignments outside the plan, apply weights, run experts, or decide correctness.
+### Single-Process Reference
 
-### Reference No-Op Transport
+- Current status: Stage 1 uses local grouping and unpermutation only.
+- Purpose: validate correctness before communication exists.
+- Contract: no distributed initialization, no collectives, no CUDA/NCCL dependency.
 
-- Runs inside one process.
-- Treats dispatch and combine as local data movement using the same plans as distributed mode.
-- Exists to make dispatch and combine metadata testable before GPUs are involved.
-- Must expose the same logical send and receive count checks as distributed transport.
+### Future PyTorch Distributed Baseline
 
-### PyTorch Distributed Baseline Transport
+- Target stage: Stage 3.
+- Purpose: validate 2-GPU variable-size dispatch/combine using a standard collective backend.
+- Contract: planning owns counts and peer order; transport executes movement without interpreting payloads.
 
-- Runs after the reference path is correct.
-- Uses PyTorch distributed collectives as the first 2-GPU baseline.
-- Must support variable-size payloads per peer. The planning layer owns counts and offsets; the transport layer executes movement according to those counts.
-- Must record collective phase ids so all ranks can prove they entered collectives in the same order.
+### Future CUDA/NCCL Path
 
-### Future CUDA/NCCL-Oriented Path
+- Target stage: Stage 5 or later.
+- Purpose: replace measured bottlenecks in packing/permutation or communication after correctness gates pass.
+- Contract: must preserve the same metadata and reference-equivalence tests.
 
-- May replace CPU-side or framework-side packing and transport only after the 2-GPU PyTorch distributed path is correct.
-- "Optimization" in this project means a measured reduction in a named phase, such as packing time, unpacking time, dispatch time, combine time, or bytes copied, while preserving reference-equivalent output.
-- Must preserve the same metadata contracts so correctness tests can compare it against the reference and PyTorch distributed paths.
+## Correctness Invariants
 
-Communication is owned only by `nano_moe_ep.transport`. Router, placement, planning, layout metadata construction, expert computation, and weighted reduction must remain communication-agnostic.
-
-## Execution Modes
-
-### Correctness-First Reference Mode
-
-- Single process, CPU-compatible, no distributed initialization required.
-- Executes the full logical path: route, assign, group, pack, no-op dispatch, local expert compute, no-op combine, unpermute, weighted reduction.
-- Prioritizes deterministic outputs, metadata inspection, invariant checks, and direct comparison against simple fixtures.
-
-### Distributed Execution Mode
-
-- Introduced only after the single-process path and deterministic dispatch/combine harness pass.
-- Starts with 2 GPUs and PyTorch distributed collectives.
-- Uses the same metadata concepts as reference mode, with transport replacing local movement.
-- Must compare distributed output to reference output within a documented tolerance before any performance conclusion is accepted.
-
-## Core Invariants
-
-- Every routed token assignment arrives at the expert identified by its expert id and placement.
-- No token assignment is silently duplicated or lost; the only intentional duplication is the `k` expert visits produced by top-k routing.
-- Top-k routing weights are applied exactly once during reduction.
-- Original token order is restored correctly before output activations leave the MoE FFN layer.
-- Distributed output matches reference output within the configured numerical tolerance.
-- Each rank agrees on collective ordering, peer order, counts, and phase ids.
-- Expert ownership remains immutable within one forward pass.
-- Empty expert segments, empty peer sends, and skewed routing distributions are valid states.
-- Dispatch and combine plans reconcile: every dispatched assignment has exactly one returned result.
-- Profiling cannot change routing, layout, transport, expert compute, or reduction behavior.
+- Every top-1 token assignment is represented exactly once.
+- No token is silently dropped or duplicated.
+- Expert ids are valid before expert execution.
+- Empty expert segments are valid.
+- `expert_counts` and `expert_offsets` reconcile with the number of tokens.
+- `permutation` contains every token index exactly once.
+- `inverse_permutation` restores original token ordering.
+- Routing weights are finite, floating point, shaped correctly, and applied exactly once.
+- Grouped/permuted execution matches the independent token-by-token oracle within tolerance.
+- Future distributed output must match the single-process reference within tolerance.
+- Future ranks must agree on peer order, counts, placement, and collective phase order.
+- Expert placement is immutable within one forward pass.

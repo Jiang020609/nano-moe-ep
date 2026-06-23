@@ -1,73 +1,73 @@
 # Design Decisions
 
-These records describe current design proposals. They are not final architecture law; they should be revisited when implementation evidence contradicts an assumption.
+These ADRs describe the current project direction. They are allowed to change when tests or measurements show that a decision is blocking correctness or learning value.
 
 ## ADR-0001: Start With A Standalone MoE FFN
 
-- Decision: the first implementation target is a standalone MoE FFN block, not a full Transformer or LLM.
-- Reasoning: Expert Parallel correctness depends on routing, permutation, variable-size dispatch, local expert execution, combine, and unpermute. A full Transformer would add attention, residual paths, layer normalization, embeddings, and training concerns before the EP data path is proven.
-- Tradeoff: this postpones realistic model integration and hides interactions with full-model memory layout.
-- Revisit when: the standalone FFN forward path is correct in reference mode and 2-GPU mode, and integration issues become the next blocker.
+- Decision: implement a standalone MoE FFN before any full Transformer or LLM.
+- Rationale: the project is about the EP data path: routing, layout, dispatch, local expert compute, combine, unpermute, and weighted reduction. A full Transformer would add unrelated attention, normalization, embeddings, and training concerns.
+- Tradeoff: early results do not prove full-model integration.
+- Revisit condition: the standalone FFN path is correct in reference and 2-GPU modes, and integration becomes the next smallest useful task.
 
-## ADR-0002: Single-Process Correctness Comes First
+## ADR-0002: Correctness Before Multi-GPU
 
-- Decision: the reference path must work in one process before any multi-GPU execution is attempted.
-- Reasoning: token routing and reduction bugs are easier to isolate without distributed process state, collective ordering, device placement, or asynchronous execution.
-- Tradeoff: early work will not demonstrate GPU communication behavior.
-- Revisit when: the reference path cannot represent a distributed-only invariant; that invariant should then be added as a simulated check before GPU work starts.
+- Decision: single-process correctness must precede distributed execution.
+- Rationale: token identity, permutation, expert counts, offsets, and weight application are easier to debug without rank state, collectives, or asynchronous device behavior.
+- Tradeoff: Stage 1 does not measure communication or GPU behavior.
+- Revisit condition: a future invariant cannot be simulated locally and must be validated with a distributed-only test.
 
-## ADR-0003: Use PyTorch Distributed Before Custom CUDA
+## ADR-0003: Top-1 First, Top-2 Later
 
-- Decision: the first distributed baseline should use PyTorch distributed collectives.
-- Reasoning: PyTorch distributed provides a known communication substrate, allowing the project to validate counts, peer ordering, payload shape, and correctness before maintaining custom kernels.
-- Tradeoff: the baseline may include overhead that a later CUDA/NCCL-oriented path can reduce, so its timings should be interpreted as baseline measurements rather than final performance goals.
-- Revisit when: the 2-GPU PyTorch distributed path passes correctness tests and profiling identifies a named phase whose measured cost justifies custom work.
+- Decision: Stage 1 implements top-1 only while metadata names remain compatible with later top-k work.
+- Rationale: top-1 proves the essential layout and oracle path without multi-assignment reduction complexity.
+- Tradeoff: top-2 duplicate token visits and multi-weight reduction are not exercised yet.
+- Revisit condition: Stage 2 dispatch/combine is deterministic and top-1 remains correct under skewed layouts.
 
 ## ADR-0004: Variable-Size Dispatch Is Core
 
-- Decision: variable token counts per expert and per rank are a first-class requirement.
-- Reasoning: real top-k routing can be skewed. Padding every expert or rank to a fixed capacity would hide the core EP problem this project exists to study.
-- Tradeoff: plans, offsets, counts, tests, and collectives become more complex from the beginning.
-- Revisit when: an implementation stage needs a temporary fixed-size fixture for debugging; that fixture must remain a test helper and not become the architecture.
+- Decision: variable token counts per expert and per rank are core to the design.
+- Rationale: routing skew is the interesting EP systems problem; fixed-size padding would hide count reconciliation, empty experts, hot experts, and load imbalance.
+- Tradeoff: planning and tests are more complex than a dense or padded toy implementation.
+- Revisit condition: a temporary fixed-size fixture is needed for debugging, and it remains isolated from the architecture.
 
-## ADR-0005: Expert Placement Is Explicit Metadata
+## ADR-0005: Routing Weights Are Validated And Applied Once
 
-- Decision: expert placement should be represented as immutable metadata mapping global expert ids to owner ranks and local expert slots.
-- Reasoning: routing produces expert ids, while dispatch needs rank destinations. Keeping placement explicit prevents router, planner, and transport responsibilities from blending together.
-- Tradeoff: every mode must carry placement metadata, even in single-process reference runs where all experts are local.
-- Revisit when: dynamic expert migration becomes an intentional post-MVP feature. It is not part of the first project version.
+- Decision: routing weights must be finite floating tensors with shape `[num_tokens, 1]` in Stage 1, and the reference path applies them exactly once.
+- Rationale: incorrect weight application can silently make a grouped implementation appear structurally correct while producing wrong activations.
+- Tradeoff: Stage 1 tests include manually constructed non-unit weights even though synthetic routers emit unit weights.
+- Revisit condition: top-2 routing requires a generalized reduction contract across multiple slots per token.
 
-## ADR-0006: Design For Top-k, Implement Top-1 First
+## ADR-0006: PyTorch Distributed Before Custom CUDA
 
-- Decision: metadata and tests should support general top-k routing, while the smallest Stage 1 implementation should use top-1.
-- Reasoning: top-2 and higher make weighted reduction and duplicate token visits unavoidable, so the design must not hard-code top-1 assumptions. Starting with top-1 keeps the first executable target small enough to validate thoroughly.
-- Tradeoff: top-2 behavior will be designed before it is fully exercised by the first implementation.
-- Revisit when: top-1 passes reference and dispatch/combine tests; then top-2 should be enabled before judging the architecture complete.
+- Decision: the first real distributed implementation should use PyTorch distributed before custom CUDA/NCCL-oriented kernels.
+- Rationale: correctness of counts, peer order, dispatch/combine, and reference equivalence should be proven before maintaining custom kernels.
+- Tradeoff: PyTorch distributed baseline timings may include overhead not present in later specialized paths.
+- Revisit condition: 2-GPU correctness passes and profiling identifies a named phase worth replacing.
 
-## ADR-0007: No Backward Propagation In The First Milestone
+## ADR-0007: 2 GPUs Before 4 GPUs
 
-- Decision: Stage 1 should be forward-only.
-- Reasoning: the project thesis is about the EP forward data path. Backward propagation introduces gradient routing, parameter gradients, optimizer state, and additional collectives before forward correctness is established.
-- Tradeoff: early implementation cannot train a model end to end.
-- Revisit when: forward reference mode, deterministic dispatch/combine, and the 2-GPU forward baseline are correct and measured.
+- Decision: the first distributed target is 2 GPUs; 4 GPUs are a later scaling and skew validation target.
+- Rationale: 2 ranks are enough to exercise cross-rank dispatch/combine and collective ordering with the smallest debugging surface.
+- Tradeoff: early distributed tests do not show 4-rank skew or placement behavior.
+- Revisit condition: 2-GPU reference equivalence, empty-peer cases, and skewed-count cases are stable.
 
-## ADR-0008: No Capacity Factor Or Token Dropping Initially
+## ADR-0008: Backward Is Deferred
 
-- Decision: the first version should not drop tokens and should not enforce a capacity factor.
-- Reasoning: token dropping intentionally changes outputs and adds policy choices. The first correctness target should prove that all routed assignments are delivered and reduced.
-- Tradeoff: pathological skew may produce large variable-size batches and is not bounded by capacity.
-- Revisit when: all-token delivery is correct and the project needs to study capacity-limited routing as a separate, explicitly tested mode.
+- Decision: Stage 1 and the first distributed milestones are forward-only.
+- Rationale: backward adds gradient routing, parameter gradients, optimizer state, and more collectives before forward EP correctness is established.
+- Tradeoff: the project cannot train end to end in early stages.
+- Revisit condition: forward reference, Stage 2 harness, and Stage 3 2-GPU baseline all pass correctness gates.
 
-## ADR-0009: Avoid Becoming A Mini Production Framework
+## ADR-0009: Capacity Factor And Token Dropping Are Deferred
 
-- Decision: the project should stay scoped to a standalone MoE FFN EP data path and its measurements.
-- Reasoning: adding a service, scheduler, full Megatron-style training stack, serving path, or broad parallelism framework would dilute the learning objective and make correctness harder to audit.
-- Tradeoff: the project will not look like a complete MoE training or inference system.
-- Revisit when: the final benchmark report is complete and a new project goal is explicitly chosen.
+- Decision: the first project version delivers every routed token and does not implement capacity factor or token dropping.
+- Rationale: dropping tokens intentionally changes outputs and complicates the reference oracle. All-token delivery is the clearer initial invariant.
+- Tradeoff: pathological skew can create large expert batches.
+- Revisit condition: all-token delivery is correct and capacity-limited routing becomes a separately tested mode.
 
-## ADR-0010: Postpone Non-Essential Functionality Until After 2-GPU Correctness
+## ADR-0010: Avoid A Vague Mini-DeepEP Clone
 
-- Decision: backward propagation, custom CUDA packing, communication-computation overlap, 4-GPU scaling, capacity-limited routing, full-Transformer integration, advanced load balancing, and production-serving concerns are postponed until after a correct 2-GPU forward path.
-- Reasoning: the first meaningful distributed milestone is small: prove that variable-size EP dispatch and combine match the single-process reference output.
-- Tradeoff: several interesting systems topics wait behind correctness gates.
-- Revisit when: Stage 3 acceptance tests pass and profiling data identifies the next bottleneck to study.
+- Decision: the project must stay narrow: explicit metadata, reference correctness, staged distributed validation, and measured bottlenecks.
+- Rationale: copying broad production framework shapes would obscure the learning objective and create a worse version of existing systems.
+- Tradeoff: many production features are intentionally absent.
+- Revisit condition: the final benchmark report is complete and a new project objective is chosen deliberately.
