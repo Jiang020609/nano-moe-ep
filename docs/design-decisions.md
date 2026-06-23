@@ -1,6 +1,6 @@
 # Design Decisions
 
-These ADRs describe the current project direction. They are allowed to change when tests or measurements show that a decision is blocking correctness or learning value.
+These ADRs describe the current project direction after Stage 2. They are allowed to change when tests or measurements show that a decision is blocking correctness or learning value.
 
 ## ADR-0001: Start With A Standalone MoE FFN
 
@@ -18,10 +18,10 @@ These ADRs describe the current project direction. They are allowed to change wh
 
 ## ADR-0003: Top-1 First, Top-2 Later
 
-- Decision: Stage 1 implements top-1 only while metadata names remain compatible with later top-k work.
-- Rationale: top-1 proves the essential layout and oracle path without multi-assignment reduction complexity.
+- Decision: Stage 1 and Stage 2 implement top-1 only while metadata names remain compatible with later top-k work.
+- Rationale: top-1 proves the essential layout, dispatch/combine, and oracle path without multi-assignment reduction complexity.
 - Tradeoff: top-2 duplicate token visits and multi-weight reduction are not exercised yet.
-- Revisit condition: Stage 2 dispatch/combine is deterministic and top-1 remains correct under skewed layouts.
+- Revisit condition: the Stage 3 2-GPU baseline is correct for top-1, or top-2 becomes the next smallest correctness gap before Stage 3.
 
 ## ADR-0004: Variable-Size Dispatch Is Core
 
@@ -53,7 +53,7 @@ These ADRs describe the current project direction. They are allowed to change wh
 
 ## ADR-0008: Backward Is Deferred
 
-- Decision: Stage 1 and the first distributed milestones are forward-only.
+- Decision: Stage 1, Stage 2, and the first distributed milestones are forward-only.
 - Rationale: backward adds gradient routing, parameter gradients, optimizer state, and more collectives before forward EP correctness is established.
 - Tradeoff: the project cannot train end to end in early stages.
 - Revisit condition: forward reference, Stage 2 harness, and Stage 3 2-GPU baseline all pass correctness gates.

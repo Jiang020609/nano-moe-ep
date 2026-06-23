@@ -4,11 +4,11 @@
 
 ## Status
 
-Current status: Stage 1 single-process CPU reference implementation. The verified baseline is `python -m pytest -q` with `28 passed`.
+Current status: Stage 2 single-process logical EP dispatch/combine harness. The verified baseline is `python -m pytest -q` with `43 passed`.
 
-The repository contains deterministic synthetic top-1 routing, explicit metadata, a grouped/permuted reference MoE FFN, an independent token-by-token oracle, and CPU tests.
+The repository contains deterministic synthetic top-1 routing, explicit metadata, a grouped/permuted reference MoE FFN, an independent token-by-token oracle, and a single-process logical-rank dispatch/combine simulation.
 
-It does not yet contain distributed Expert Parallel execution, CUDA, NCCL, multiprocessing, custom kernels, top-2 routing, capacity factor, token dropping, backward logic, or benchmarking.
+It does not yet contain real distributed Expert Parallel execution, CUDA, NCCL, multiprocessing, custom kernels, top-2 routing, capacity factor, token dropping, backward logic, or benchmarking.
 
 ## Documentation
 
@@ -19,14 +19,14 @@ It does not yet contain distributed Expert Parallel execution, CUDA, NCCL, multi
 
 ## Milestones
 
-- Stage 0 — Architecture and invariants
-- Stage 1 — Single-process reference MoE FFN
-- Stage 2 — Deterministic dispatch/combine harness
-- Stage 3 — 2-GPU EP baseline
-- Stage 4 — 4-GPU scaling and skew experiments
-- Stage 5 — GPU-side packing/permutation optimization
-- Stage 6 — Communication-computation overlap
-- Stage 7 — Final benchmark report
+- Stage 0 - Architecture and invariants
+- Stage 1 - Single-process reference MoE FFN
+- Stage 2 - Deterministic dispatch/combine harness
+- Stage 3 - 2-GPU EP baseline
+- Stage 4 - 4-GPU scaling and skew experiments
+- Stage 5 - GPU-side packing/permutation optimization
+- Stage 6 - Communication-computation overlap
+- Stage 7 - Final benchmark report
 
 ## Quick Start
 
@@ -38,5 +38,5 @@ python -m pytest -q
 
 - No full LLM, full Transformer, inference server, scheduler, autoscaler, or training platform.
 - No tensor parallelism, pipeline parallelism, data parallelism, speculative decoding, serving stack, or dynamic expert migration in the first project version.
-- No custom CUDA kernels until the CPU/reference path and a 2-GPU PyTorch distributed baseline are correct and measurable.
+- No custom CUDA kernels until the CPU/reference path, logical dispatch/combine harness, and a 2-GPU PyTorch distributed baseline are correct and measurable.
 - No copied implementation from DeepEP, Megatron-Core, vLLM, SGLang, or other production MoE frameworks.

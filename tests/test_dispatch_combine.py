@@ -4,7 +4,7 @@ import torch
 from nano_moe_ep.dispatch_combine import build_token_assignments, run_logical_ep_moe
 from nano_moe_ep.reference import ReferenceMoEFFN
 from nano_moe_ep.routing import route_explicit, route_round_robin
-from nano_moe_ep.types import CombinePlan, ExpertPlacement, RouterOutput
+from nano_moe_ep.types import CombinePlan, DispatchPlan, ExpertPlacement, RouterOutput, TokenLayout
 
 
 RTOL = 1e-5
@@ -186,6 +186,38 @@ def test_combine_plan_rejects_missing_or_duplicated_token_indices():
             token_indices=torch.tensor([0, 0, 1]),
             routing_weights=torch.ones(3, 1),
             num_tokens=3,
+        )
+
+
+def test_rank_expert_offsets_must_start_and_end_at_rank_boundaries():
+    with pytest.raises(ValueError, match="rank_expert_offsets must start each rank at 0"):
+        TokenLayout(
+            permutation=torch.tensor([0, 1]),
+            inverse_permutation=torch.tensor([0, 1]),
+            expert_offsets=torch.tensor([0, 1, 2]),
+            expert_counts=torch.tensor([1, 1]),
+            rank_offsets=torch.tensor([0, 2]),
+            rank_counts=torch.tensor([2]),
+            rank_expert_offsets=torch.tensor([[1, 2, 3]]),
+            rank_expert_counts=torch.tensor([[1, 1]]),
+        )
+
+
+def test_dispatch_plan_payload_order_must_match_layout_permutation():
+    model, inputs = _model_and_inputs(seed=10, num_tokens=4)
+    router_output = route_explicit([0, 1, 2, 3], num_experts=model.num_experts)
+    placement = ExpertPlacement.from_rank_experts(
+        {0: [0, 1], 1: [2, 3]},
+        num_experts=model.num_experts,
+        num_ep_ranks=2,
+    )
+    _, trace = _assert_matches_stage1(model, inputs, router_output, placement)
+
+    with pytest.raises(ValueError, match="dispatch payload token order"):
+        DispatchPlan(
+            layout=trace.token_layout,
+            assignments=trace.dispatch_plan.assignments,
+            payload_token_indices_by_rank=((1, 0), (2, 3)),
         )
 
 

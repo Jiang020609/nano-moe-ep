@@ -158,6 +158,13 @@ class TokenLayout:
         if (self.rank_expert_counts < 0).any().item():
             raise ValueError("rank_expert_counts must be non-negative")
         if not torch.equal(
+            self.rank_expert_offsets[:, 0],
+            torch.zeros(num_ranks, dtype=self.rank_expert_offsets.dtype, device=self.rank_expert_offsets.device),
+        ):
+            raise ValueError("rank_expert_offsets must start each rank at 0")
+        if not torch.equal(self.rank_expert_offsets[:, -1], self.rank_counts):
+            raise ValueError("rank_expert_offsets must end each rank at its rank_count")
+        if not torch.equal(
             self.rank_expert_offsets[:, 1:] - self.rank_expert_offsets[:, :-1],
             self.rank_expert_counts,
         ):
@@ -304,6 +311,17 @@ class DispatchPlan:
             raise ValueError("dispatch payload token count must match layout token count")
         if len(self.assignments) != self.layout.permutation.numel():
             raise ValueError("assignments must match layout token count")
+        payload_token_indices = tuple(
+            token_index
+            for payload in self.payload_token_indices_by_rank
+            for token_index in payload
+        )
+        layout_token_indices = tuple(int(token_index.item()) for token_index in self.layout.permutation)
+        if payload_token_indices != layout_token_indices:
+            raise ValueError("dispatch payload token order must match layout permutation")
+        assignment_token_indices = tuple(assignment.token_index for assignment in self.assignments)
+        if assignment_token_indices != layout_token_indices:
+            raise ValueError("dispatch assignments must match layout permutation")
 
 
 @dataclass(frozen=True)
