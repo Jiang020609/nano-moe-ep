@@ -22,6 +22,19 @@ def test_valid_single_process_ep_context_metadata():
     assert context.phase == "dispatch"
 
 
+def test_ep_context_accepts_distributed_device_metadata():
+    context = EPContext(
+        num_ep_ranks=2,
+        local_rank=1,
+        execution_mode=ExecutionMode.DISTRIBUTED,
+        device="cuda:1",
+        phase="distributed_forward",
+    )
+
+    assert context.execution_mode is ExecutionMode.DISTRIBUTED
+    assert context.device == "cuda:1"
+
+
 @pytest.mark.parametrize("num_ep_ranks", [0, -1, True, "2"])
 def test_ep_context_rejects_invalid_num_ep_ranks(num_ep_ranks):
     with pytest.raises(ValueError, match="num_ep_ranks"):

@@ -2,16 +2,17 @@
 
 ## Current Verified Baseline
 
-The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations plus Stage 2.75 execution-context metadata.
+The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations, Stage 2.75 execution-context metadata, and an initial Stage 3 PyTorch distributed EP baseline.
 
 - Command: `python -m pytest -q`
-- Result: `55 passed`
+- Result: `64 passed`
 - Stage 1 implemented: deterministic synthetic top-1 routing, `RouterOutput`, `TokenLayout`, `ExpertPlacement`, `ReferenceTrace`, grouped/permuted reference MoE FFN, and an independent token-by-token oracle.
 - Stage 2 implemented: `TokenAssignment`, rank-aware `TokenLayout`, table-driven `ExpertPlacement`, `DispatchPlan`, `CombinePlan`, `LogicalEPTrace`, and a single-process logical EP dispatch/combine simulation.
 - Stage 2.75 implemented: `ExecutionMode` and `EPContext` metadata for one logical EP execution, with validation against `ExpertPlacement`.
-- Not implemented: real distributed EP, `torch.distributed`, CUDA, NCCL, multiprocessing, custom kernels, top-2 routing, capacity factor, token dropping, backward-specific logic, benchmarks, or `ProfileEvent`.
+- Stage 3 implemented: minimal `torch.distributed` forward path with explicit count exchange, variable-size dispatch/combine helpers, local expert execution, and a manual `torchrun` smoke script.
+- Not implemented: custom CUDA kernels, raw NCCL calls, Triton, multiprocessing-managed launch code, top-2 routing, capacity factor, token dropping, backward-specific logic, benchmarks, or `ProfileEvent`.
 
-Stage 2 simulates logical EP ranks inside one process. It is not a real multi-GPU implementation.
+Stage 2 simulates logical EP ranks inside one process. Stage 3 adds a real distributed transport boundary, but it is a correctness baseline rather than a performance implementation.
 
 ## Project Thesis
 
@@ -24,7 +25,7 @@ Stage 2 simulates logical EP ranks inside one process. It is not a real multi-GP
 - Deterministic synthetic top-1 routing.
 - Explicit metadata for routing, execution context, placement, token layout, assignment, dispatch, and combine.
 - Single-process logical-rank dispatch/combine simulation.
-- Future 2-GPU PyTorch distributed baseline after Stage 2 metadata remains stable.
+- Minimal 2-rank PyTorch distributed baseline after Stage 2 metadata remains stable.
 - Later measurement of routing skew, packing/permutation cost, communication cost, expert compute, and overlap.
 
 ## Out of Scope
@@ -50,7 +51,7 @@ Stage 2 simulates logical EP ranks inside one process. It is not a real multi-GP
 +--------------------------------------------------------------+
 | Layout: rank -> expert -> original-token order               |
 +--------------------------------------------------------------+
-| Single-process logical dispatch/combine simulation           |
+| Single-process logical and Stage 3 distributed transport     |
 +--------------------------------------------------------------+
 | Local expert MLP computation                                 |
 +--------------------------------------------------------------+
@@ -58,7 +59,7 @@ Stage 2 simulates logical EP ranks inside one process. It is not a real multi-GP
 +--------------------------------------------------------------+
 ```
 
-The current transport is only a local simulation. Future Stage 3 code should be able to replace the simulated movement boundary without changing router semantics or expert execution.
+The Stage 2 transport is only a local simulation. Stage 3 replaces that movement boundary with PyTorch distributed collectives without changing router semantics or expert ownership.
 
 ## Implemented One-Layer Data Flow
 
@@ -76,6 +77,18 @@ The current transport is only a local simulation. Future Stage 3 code should be 
 12. `build_combine_plan` records token indices and routing weights in dispatch order.
 13. `apply_combine_plan` applies routing weights exactly once and restores original token order.
 14. `run_logical_ep_moe` returns output activations plus `LogicalEPTrace`.
+
+## Stage 3 Distributed Data Flow
+
+1. Every rank constructs the same deterministic input, router output, expert weights, and `ExpertPlacement`.
+2. Each rank owns a deterministic source-token shard by `token_index % world_size`.
+3. Each rank builds the same global assignment/layout metadata, then derives its local variable-size send payloads by destination expert rank.
+4. `exchange_counts` gathers pairwise send counts before any payload exchange.
+5. Tokens, token ids, expert ids, and routing weights are exchanged to destination expert ranks.
+6. Each rank validates that received expert ids belong to experts it owns, then executes only those local experts.
+7. Expert outputs, token ids, and routing weights are exchanged back to source-token ranks.
+8. Each source rank applies routing weights exactly once into a zero-padded full output tensor.
+9. An `all_reduce` sums the disjoint source-token contributions so every rank can compare the full output to the local reference.
 
 ## Module Boundaries
 
@@ -99,6 +112,13 @@ The current transport is only a local simulation. Future Stage 3 code should be 
 - Inputs: input activations, `RouterOutput`, expert modules, `ExpertPlacement`, and optional `EPContext`.
 - Outputs: output activations and `LogicalEPTrace`.
 - Must never own: route selection, distributed collectives, CUDA kernels, top-2 reduction policy, or benchmarks.
+
+### `nano_moe_ep.distributed_ep`
+
+- Responsibility: Stage 3 distributed count exchange, variable-size tensor exchange, source-token reconstruction, and distributed forward orchestration.
+- Inputs: input activations, `RouterOutput`, expert modules, `ExpertPlacement`, and initialized `torch.distributed` rank metadata.
+- Outputs: output activations and `DistributedEPTrace`.
+- Must never own: route selection, expert placement semantics, custom kernels, top-2 reduction policy, backward, or benchmarks.
 
 ### `nano_moe_ep.types`
 
@@ -163,6 +183,12 @@ The current transport is only a local simulation. Future Stage 3 code should be 
 - Status: proposed for Stage 3+.
 - Purpose: named phase timing/count/byte records that do not alter execution.
 
+### DistributedEPConfig / DistributedPayloadPlan / DistributedEPTrace
+
+- Status: implemented for Stage 3.
+- Purpose: keep distributed runtime metadata, local source payload metadata, count exchange metadata, and trace fields explicit.
+- Invariants: config matches the initialized process group; send and receive counts are non-negative and pairwise consistent; returned token ids match the rank's deterministic source-token shard.
+
 ## Transport Boundary
 
 ### Current Single-Process Simulation
@@ -171,11 +197,12 @@ The current transport is only a local simulation. Future Stage 3 code should be 
 - Simulates one payload per logical destination rank.
 - Has no `torch.distributed`, CUDA, NCCL, or multiprocessing.
 
-### Future PyTorch Distributed Baseline
+### PyTorch Distributed Baseline
 
 - Target: Stage 3.
-- Should reuse `ExpertPlacement`, `TokenAssignment`, `TokenLayout`, `DispatchPlan`, and `CombinePlan` concepts.
+- Reuses `ExpertPlacement`, `TokenAssignment`, `TokenLayout`, and once-only weight application concepts.
 - Transport should execute movement according to counts and peer order, not choose routes or apply weights.
+- CPU/Gloo smoke is supported for correctness-only environments; NCCL is used only when CUDA/NCCL are available.
 
 ### Future CUDA/NCCL Path
 

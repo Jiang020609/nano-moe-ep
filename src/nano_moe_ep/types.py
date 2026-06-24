@@ -22,6 +22,7 @@ class ExecutionMode(str, Enum):
 
     REFERENCE = "reference"
     LOGICAL_SINGLE_PROCESS = "logical_single_process"
+    DISTRIBUTED = "distributed"
     FUTURE_DISTRIBUTED = "future_distributed"
 
 
@@ -32,7 +33,7 @@ class EPContext:
     num_ep_ranks: int
     local_rank: int | None = None
     execution_mode: ExecutionMode = ExecutionMode.LOGICAL_SINGLE_PROCESS
-    device: str | None = "cpu"
+    device: str | torch.device | None = "cpu"
     deterministic: bool = True
     phase: str = "forward"
 
@@ -52,8 +53,12 @@ class EPContext:
             except ValueError as exc:
                 raise ValueError("execution_mode must be a valid ExecutionMode") from exc
             object.__setattr__(self, "execution_mode", execution_mode)
-        if self.device is not None and self.device != "cpu":
-            raise ValueError("device must be None or 'cpu' for Stage 2 logical execution")
+        if self.device is not None:
+            try:
+                device = torch.device(self.device)
+            except (TypeError, RuntimeError) as exc:
+                raise ValueError("device must be None or a valid torch device") from exc
+            object.__setattr__(self, "device", str(device))
         if not isinstance(self.deterministic, bool):
             raise ValueError("deterministic must be a bool")
         if not isinstance(self.phase, str) or self.phase == "":
