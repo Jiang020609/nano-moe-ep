@@ -5,6 +5,8 @@ from nano_moe_ep.reference import ReferenceMoEFFN
 from nano_moe_ep.types import (
     CombinePlan,
     DispatchPlan,
+    EPContext,
+    ExecutionMode,
     ExpertPlacement,
     ReferenceTrace,
     RouterOutput,
@@ -15,6 +17,8 @@ from nano_moe_ep.types import (
 __all__ = [
     "CombinePlan",
     "DispatchPlan",
+    "EPContext",
+    "ExecutionMode",
     "ExpertPlacement",
     "LogicalEPTrace",
     "ReferenceMoEFFN",

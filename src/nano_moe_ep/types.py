@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import Enum
 
 import torch
 
@@ -14,6 +15,70 @@ def _is_integer_tensor(tensor: torch.Tensor) -> bool:
     except TypeError:
         return False
     return True
+
+
+class ExecutionMode(str, Enum):
+    """Execution mode metadata for one EP forward path."""
+
+    REFERENCE = "reference"
+    LOGICAL_SINGLE_PROCESS = "logical_single_process"
+    FUTURE_DISTRIBUTED = "future_distributed"
+
+
+@dataclass(frozen=True)
+class EPContext:
+    """Execution metadata for one logical Expert Parallel run."""
+
+    num_ep_ranks: int
+    local_rank: int | None = None
+    execution_mode: ExecutionMode = ExecutionMode.LOGICAL_SINGLE_PROCESS
+    device: str | None = "cpu"
+    deterministic: bool = True
+    phase: str = "forward"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.num_ep_ranks, int) or isinstance(self.num_ep_ranks, bool):
+            raise ValueError("num_ep_ranks must be an integer")
+        if self.num_ep_ranks <= 0:
+            raise ValueError("num_ep_ranks must be positive")
+        if self.local_rank is not None:
+            if not isinstance(self.local_rank, int) or isinstance(self.local_rank, bool):
+                raise ValueError("local_rank must be an integer or None")
+            if self.local_rank < 0 or self.local_rank >= self.num_ep_ranks:
+                raise ValueError("local_rank must be in [0, num_ep_ranks)")
+        if not isinstance(self.execution_mode, ExecutionMode):
+            try:
+                execution_mode = ExecutionMode(self.execution_mode)
+            except ValueError as exc:
+                raise ValueError("execution_mode must be a valid ExecutionMode") from exc
+            object.__setattr__(self, "execution_mode", execution_mode)
+        if self.device is not None and self.device != "cpu":
+            raise ValueError("device must be None or 'cpu' for Stage 2 logical execution")
+        if not isinstance(self.deterministic, bool):
+            raise ValueError("deterministic must be a bool")
+        if not isinstance(self.phase, str) or self.phase == "":
+            raise ValueError("phase must be a non-empty string")
+
+    @classmethod
+    def single_process(cls, *, num_ep_ranks: int, phase: str = "forward") -> "EPContext":
+        """Create the default Stage 2 logical single-process context."""
+
+        return cls(
+            num_ep_ranks=num_ep_ranks,
+            local_rank=None,
+            execution_mode=ExecutionMode.LOGICAL_SINGLE_PROCESS,
+            device="cpu",
+            deterministic=True,
+            phase=phase,
+        )
+
+    def require_compatible_placement(self, expert_placement: "ExpertPlacement") -> None:
+        """Check that execution metadata agrees with expert ownership metadata."""
+
+        if not isinstance(expert_placement, ExpertPlacement):
+            raise ValueError("expert_placement must be an ExpertPlacement")
+        if self.num_ep_ranks != expert_placement.num_ep_ranks:
+            raise ValueError("EPContext num_ep_ranks must match ExpertPlacement num_ep_ranks")
 
 
 @dataclass(frozen=True)

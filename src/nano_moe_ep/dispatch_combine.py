@@ -9,6 +9,7 @@ from torch import nn
 from nano_moe_ep.types import (
     CombinePlan,
     DispatchPlan,
+    EPContext,
     ExpertPlacement,
     RouterOutput,
     TokenAssignment,
@@ -25,6 +26,7 @@ class LogicalEPTrace:
     dispatch_plan: DispatchPlan
     combine_plan: CombinePlan
     expert_placement: ExpertPlacement
+    ep_context: EPContext
 
 
 def _validate_router(router_output: RouterOutput, *, num_tokens: int, num_experts: int) -> None:
@@ -234,10 +236,17 @@ def run_logical_ep_moe(
     router_output: RouterOutput,
     experts: Sequence[nn.Module],
     expert_placement: ExpertPlacement,
+    ep_context: EPContext | None = None,
 ) -> tuple[torch.Tensor, LogicalEPTrace]:
     """Run the Stage 2 single-process logical EP dispatch/combine simulation."""
 
     _validate_inputs(inputs, router_output, experts, expert_placement)
+    if ep_context is None:
+        ep_context = EPContext.single_process(num_ep_ranks=expert_placement.num_ep_ranks)
+    elif not isinstance(ep_context, EPContext):
+        raise ValueError("ep_context must be an EPContext")
+    ep_context.require_compatible_placement(expert_placement)
+
     assignments = build_token_assignments(router_output, expert_placement)
     layout = build_logical_ep_layout(
         assignments,
@@ -256,4 +265,5 @@ def run_logical_ep_moe(
         dispatch_plan=dispatch_plan,
         combine_plan=combine_plan,
         expert_placement=expert_placement,
+        ep_context=ep_context,
     )

@@ -4,9 +4,9 @@
 
 ## Status
 
-Current status: Stage 2 single-process logical EP dispatch/combine harness. The verified baseline is `python -m pytest -q` with `43 passed`.
+Current status: Stage 2 single-process logical EP dispatch/combine harness plus Stage 2.75 execution-context metadata. The verified baseline is `python -m pytest -q` with `55 passed`.
 
-The repository contains deterministic synthetic top-1 routing, explicit metadata, a grouped/permuted reference MoE FFN, an independent token-by-token oracle, and a single-process logical-rank dispatch/combine simulation.
+The repository contains deterministic synthetic top-1 routing, explicit metadata including `EPContext`, a grouped/permuted reference MoE FFN, an independent token-by-token oracle, and a single-process logical-rank dispatch/combine simulation.
 
 It does not yet contain real distributed Expert Parallel execution, CUDA, NCCL, multiprocessing, custom kernels, top-2 routing, capacity factor, token dropping, backward logic, or benchmarking.
 

@@ -19,17 +19,17 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: grouped output matches oracle; token order and counts are validated; non-unit weights are applied once; non-contiguous input works.
 - Non-goals: distributed EP, CUDA/NCCL, top-2, capacity factor, token dropping, backward, serving, or benchmarking.
 - Validation gate: Stage 1 tests pass on CPU with fixed seeds and `rtol=1e-5`, `atol=1e-6`.
-- Status: complete and still covered by the current `43 passed` suite.
+- Status: complete and still covered by the current `55 passed` suite.
 - Kill criteria: nondeterministic reference output, token loss/duplication, ambiguous inverse permutation semantics, or hidden weight application.
 
 ## Stage 2 - Deterministic dispatch/combine harness
 
 - Goal: simulate dispatch/combine locally without distributed processes so logical EP metadata can be tested deterministically.
-- Deliverables: `TokenAssignment`, rank-aware `TokenLayout`, table-driven `ExpertPlacement`, `DispatchPlan`, `CombinePlan`, `LogicalEPTrace`, local payload simulation, per-rank expert execution, and combine restore.
+- Deliverables: `TokenAssignment`, rank-aware `TokenLayout`, table-driven `ExpertPlacement`, `DispatchPlan`, `CombinePlan`, `LogicalEPTrace`, `EPContext`, local payload simulation, per-rank expert execution, and combine restore.
 - Acceptance tests: every assignment is packed once, every output combines once, empty experts/ranks are represented, payload order matches layout permutation, invalid placement is rejected, and logical EP output matches Stage 1 reference.
 - Non-goals: real `torch.distributed`, GPUs, CUDA kernels, NCCL, benchmarks, overlap, top-2, or backward.
 - Validation gate: deterministic fixtures cover balanced routing, all-to-one skew, empty experts, empty ranks, uneven placement, non-unit weights, non-contiguous input, and failure injection for duplicate/missing tokens.
-- Status: implemented; current verified suite is `python -m pytest -q` with `43 passed`.
+- Status: implemented; Stage 2.75 execution-context metadata is in place; current verified suite is `python -m pytest -q` with `55 passed`.
 - Kill criteria: assignment identity is lost, counts do not reconcile, combine order is ambiguous, payload order can diverge from layout, or output cannot be compared to Stage 1 reference.
 
 ## Stage 3 - 2-GPU EP baseline

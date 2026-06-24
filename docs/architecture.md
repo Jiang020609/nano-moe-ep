@@ -2,13 +2,14 @@
 
 ## Current Verified Baseline
 
-The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations.
+The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations plus Stage 2.75 execution-context metadata.
 
 - Command: `python -m pytest -q`
-- Result: `43 passed in 2.65s`
+- Result: `55 passed`
 - Stage 1 implemented: deterministic synthetic top-1 routing, `RouterOutput`, `TokenLayout`, `ExpertPlacement`, `ReferenceTrace`, grouped/permuted reference MoE FFN, and an independent token-by-token oracle.
 - Stage 2 implemented: `TokenAssignment`, rank-aware `TokenLayout`, table-driven `ExpertPlacement`, `DispatchPlan`, `CombinePlan`, `LogicalEPTrace`, and a single-process logical EP dispatch/combine simulation.
-- Not implemented: real distributed EP, `torch.distributed`, CUDA, NCCL, multiprocessing, custom kernels, top-2 routing, capacity factor, token dropping, backward-specific logic, benchmarks, `EPContext`, or `ProfileEvent`.
+- Stage 2.75 implemented: `ExecutionMode` and `EPContext` metadata for one logical EP execution, with validation against `ExpertPlacement`.
+- Not implemented: real distributed EP, `torch.distributed`, CUDA, NCCL, multiprocessing, custom kernels, top-2 routing, capacity factor, token dropping, backward-specific logic, benchmarks, or `ProfileEvent`.
 
 Stage 2 simulates logical EP ranks inside one process. It is not a real multi-GPU implementation.
 
@@ -21,7 +22,7 @@ Stage 2 simulates logical EP ranks inside one process. It is not a real multi-GP
 - Standalone MoE FFN before full Transformer integration.
 - CPU reference correctness and independent oracle comparison.
 - Deterministic synthetic top-1 routing.
-- Explicit metadata for routing, placement, token layout, assignment, dispatch, and combine.
+- Explicit metadata for routing, execution context, placement, token layout, assignment, dispatch, and combine.
 - Single-process logical-rank dispatch/combine simulation.
 - Future 2-GPU PyTorch distributed baseline after Stage 2 metadata remains stable.
 - Later measurement of routing skew, packing/permutation cost, communication cost, expert compute, and overlap.
@@ -64,15 +65,17 @@ The current transport is only a local simulation. Future Stage 3 code should be 
 1. Input activations enter as `[num_tokens, hidden_dim]`.
 2. Synthetic top-1 routing emits `RouterOutput.expert_indices` and `RouterOutput.weights`, both shaped `[num_tokens, 1]`.
 3. `ExpertPlacement` maps every expert to exactly one logical EP rank.
-4. `build_token_assignments` creates one `TokenAssignment` per token with token id, expert id, rank id, routing weight, and original position.
-5. `build_logical_ep_layout` sorts assignments by destination rank, then expert id, then original token order.
-6. Rank-aware `TokenLayout` records token permutation, inverse permutation, expert counts/offsets, rank counts/offsets, and rank/expert counts/offsets.
-7. `build_dispatch_plan` creates one logical payload per destination rank and validates payload order against the layout permutation.
-8. `simulate_dispatch` gathers local payload tensors without communication.
-9. `execute_local_experts` runs each expert only on the slices assigned to that rank/expert segment.
-10. `build_combine_plan` records token indices and routing weights in dispatch order.
-11. `apply_combine_plan` applies routing weights exactly once and restores original token order.
-12. `run_logical_ep_moe` returns output activations plus `LogicalEPTrace`.
+4. Optional `EPContext` metadata records execution mode, logical world size, optional local rank, CPU device marker, deterministic flag, and phase name.
+5. `run_logical_ep_moe` validates `EPContext.num_ep_ranks` against `ExpertPlacement.num_ep_ranks`.
+6. `build_token_assignments` creates one `TokenAssignment` per token with token id, expert id, rank id, routing weight, and original position.
+7. `build_logical_ep_layout` sorts assignments by destination rank, then expert id, then original token order.
+8. Rank-aware `TokenLayout` records token permutation, inverse permutation, expert counts/offsets, rank counts/offsets, and rank/expert counts/offsets.
+9. `build_dispatch_plan` creates one logical payload per destination rank and validates payload order against the layout permutation.
+10. `simulate_dispatch` gathers local payload tensors without communication.
+11. `execute_local_experts` runs each expert only on the slices assigned to that rank/expert segment.
+12. `build_combine_plan` records token indices and routing weights in dispatch order.
+13. `apply_combine_plan` applies routing weights exactly once and restores original token order.
+14. `run_logical_ep_moe` returns output activations plus `LogicalEPTrace`.
 
 ## Module Boundaries
 
@@ -93,14 +96,14 @@ The current transport is only a local simulation. Future Stage 3 code should be 
 ### `nano_moe_ep.dispatch_combine`
 
 - Responsibility: Stage 2 logical-rank assignment, layout, dispatch simulation, local expert execution orchestration, combine planning, and final restore.
-- Inputs: input activations, `RouterOutput`, expert modules, `ExpertPlacement`.
+- Inputs: input activations, `RouterOutput`, expert modules, `ExpertPlacement`, and optional `EPContext`.
 - Outputs: output activations and `LogicalEPTrace`.
 - Must never own: route selection, distributed collectives, CUDA kernels, top-2 reduction policy, or benchmarks.
 
 ### `nano_moe_ep.types`
 
 - Responsibility: shared metadata validation.
-- Current note: `types.py` is larger after Stage 2, but still acceptable because all records are small metadata contracts. A split into `metadata.py`, `placement.py`, or `plans.py` should wait until Stage 3 pressure justifies API movement.
+- Current note: `types.py` is larger after Stage 2.75, but still acceptable because all records are small metadata contracts. A split into `metadata.py`, `placement.py`, or `plans.py` should wait until Stage 3 pressure justifies API movement.
 - Must never own: tensor computation, communication execution, or benchmark interpretation.
 
 ## Metadata Concepts
@@ -145,13 +148,15 @@ The current transport is only a local simulation. Future Stage 3 code should be 
 ### LogicalEPTrace
 
 - Status: implemented.
-- Fields: assignments, token layout, dispatch plan, combine plan, expert placement.
+- Fields: assignments, token layout, dispatch plan, combine plan, expert placement, EP context.
 - Purpose: inspect Stage 2 behavior without hiding metadata.
 
 ### EPContext
 
-- Status: proposed for Stage 3.
-- Purpose: rank/world/backend/device/dtype/phase metadata for real distributed execution.
+- Status: implemented as Stage 2.75 preparation metadata.
+- Fields: `num_ep_ranks`, optional `local_rank`, `execution_mode`, optional CPU-only `device`, `deterministic`, and `phase`.
+- Purpose: describe one logical EP execution and validate that context world size agrees with expert placement before future distributed transport is added.
+- Non-purpose: route selection, expert ownership, token layout, communication, or device execution.
 
 ### ProfileEvent
 

@@ -4,7 +4,7 @@ The project tests correctness before distributed scale or optimization. Tests sh
 
 ## Existing Verified Tests
 
-The current verified baseline is `python -m pytest -q` with `43 passed in 2.65s`.
+The current verified baseline is `python -m pytest -q` with `55 passed`.
 
 Existing tests cover:
 
@@ -20,6 +20,7 @@ Existing tests cover:
 - Stage 2 `DispatchPlan` payload order matching layout permutation.
 - Stage 2 `CombinePlan` rejecting missing or duplicated token indices.
 - Stage 2 logical EP output matching Stage 1 reference.
+- Stage 2.75 `EPContext` validation, placement world-size agreement, and unchanged logical EP output when context is provided.
 
 ## Stage 2 Layout And Plan Tests
 
@@ -31,6 +32,7 @@ Stage 2 is implemented as a single-process logical EP simulation. The tests inte
 - `DispatchPlan` payload construction without expert computation.
 - `execute_local_experts` running expert slices according to rank/expert offsets.
 - `CombinePlan` alignment and exact once-only weight application.
+- `EPContext` validation before dispatch/combine ownership begins.
 - Final output equivalence to the Stage 1 reference.
 
 ## Randomized Tests
