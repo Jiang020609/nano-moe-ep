@@ -19,7 +19,7 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: grouped output matches oracle; token order and counts are validated; non-unit weights are applied once; non-contiguous input works.
 - Non-goals: distributed EP, CUDA/NCCL, top-2, capacity factor, token dropping, backward, serving, or benchmarking.
 - Validation gate: Stage 1 tests pass on CPU with fixed seeds and `rtol=1e-5`, `atol=1e-6`.
-- Status: complete and still covered by the current `55 passed` suite.
+- Status: complete and still covered by the current `64 passed` suite.
 - Kill criteria: nondeterministic reference output, token loss/duplication, ambiguous inverse permutation semantics, or hidden weight application.
 
 ## Stage 2 - Deterministic dispatch/combine harness
@@ -29,17 +29,17 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: every assignment is packed once, every output combines once, empty experts/ranks are represented, payload order matches layout permutation, invalid placement is rejected, and logical EP output matches Stage 1 reference.
 - Non-goals: real `torch.distributed`, GPUs, CUDA kernels, NCCL, benchmarks, overlap, top-2, or backward.
 - Validation gate: deterministic fixtures cover balanced routing, all-to-one skew, empty experts, empty ranks, uneven placement, non-unit weights, non-contiguous input, and failure injection for duplicate/missing tokens.
-- Status: implemented; Stage 2.75 execution-context metadata is in place; current verified suite is `python -m pytest -q` with `55 passed`.
+- Status: implemented; Stage 2.75 execution-context metadata is in place; current verified suite is `python -m pytest -q` with `64 passed`.
 - Kill criteria: assignment identity is lost, counts do not reconcile, combine order is ambiguous, payload order can diverge from layout, or output cannot be compared to Stage 1 reference.
 
 ## Stage 3 - 2-GPU EP baseline
 
 - Goal: validate the EP forward path on 2 GPUs with a PyTorch distributed baseline.
-- Deliverables: 2-rank launch path, transport backend, collective phase ordering checks, per-rank count reconciliation, and reference-equivalence tests.
+- Deliverables: 2-rank launch path, transport backend, collective phase ordering checks, per-rank count reconciliation, reference-equivalence smoke script, and CPU unit tests for distributed planning metadata.
 - Acceptance tests: both ranks agree on placement, peer order, counts, and phase ids; distributed output matches Stage 1 reference within tolerance.
 - Non-goals: 4-GPU scaling, custom CUDA packing, overlap, backward, serving, or production deployment.
 - Validation gate: 2-GPU balanced, empty-peer, and skewed fixtures pass repeatedly without hangs.
-- Status: not started.
+- Status: baseline implemented with `torch.distributed` and validated end-to-end by 2- and 4-process Gloo tests in CI (bit-for-bit vs. the single-process reference); the NCCL `all_to_all_single` path still requires a CUDA/NCCL environment via the manual smoke.
 - Kill criteria: collectives can be entered in different order, counts are rank-inconsistent, or output differs from reference beyond tolerance.
 
 ## Stage 4 - 4-GPU scaling and skew experiments

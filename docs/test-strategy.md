@@ -4,7 +4,7 @@ The project tests correctness before distributed scale or optimization. Tests sh
 
 ## Existing Verified Tests
 
-The current verified baseline is `python -m pytest -q` with `55 passed`.
+The current verified baseline is `python -m pytest -q` with `71 passed`.
 
 Existing tests cover:
 
@@ -21,6 +21,7 @@ Existing tests cover:
 - Stage 2 `CombinePlan` rejecting missing or duplicated token indices.
 - Stage 2 logical EP output matching Stage 1 reference.
 - Stage 2.75 `EPContext` validation, placement world-size agreement, and unchanged logical EP output when context is provided.
+- Stage 3 source-token partitioning, distributed payload count/offset metadata, return-count reversal, and partial combine validation.
 
 ## Stage 2 Layout And Plan Tests
 
@@ -56,6 +57,24 @@ Stage 3 distributed tests must compare against the Stage 1/2 local references:
 - Same assignment ids before and after dispatch/combine.
 - Per-rank outputs gathered or compared so the final token-major output matches reference.
 - Failure reports include rank id, peer id, phase id, expected counts, observed counts, max absolute error, and max relative error.
+
+These equivalence tests now run automatically as multi-process Gloo end-to-end
+tests in `tests/test_distributed_ep_e2e.py` (driven by the `tests/_dist_harness.py`
+`mp.spawn` harness). They spawn 2- and 4-rank processes on CPU and assert that
+`run_distributed_ep_moe` matches both the Stage 2 logical simulation and the
+Stage 1 reference, on every rank, across balanced, all-to-one-skew, empty-expert,
+empty-rank, single-token, and non-unit-weight fixtures. Because Gloo lacks
+`all_to_all_single`, these cover the `_all_gather_variable_tensors` fallback and
+all surrounding orchestration; the NCCL `all_to_all_single` collective itself is
+covered only by the manual smoke below.
+
+The manual Stage 3 smoke is launched with:
+
+```bash
+torchrun --standalone --nproc_per_node=2 scripts/run_stage3_2gpu_smoke.py
+```
+
+It uses NCCL only when two CUDA devices and NCCL are available; otherwise it falls back to CPU/Gloo. The smoke is correctness-only and must not be interpreted as a benchmark.
 
 ## Collective Ordering Tests
 
