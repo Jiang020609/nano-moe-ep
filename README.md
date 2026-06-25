@@ -6,13 +6,15 @@
 
 ## Status
 
-Current status: Stage 3 minimal PyTorch distributed EP baseline on top of the Stage 2 logical dispatch/combine harness. The verified pytest baseline is `python -m pytest -q` with `74 passed`. The distributed dispatch/combine path is validated end-to-end on 2- and 4-process Gloo in CI (asserting bit-for-bit equality with the single-process reference); the NCCL `all_to_all_single` branch is covered by the manual 2-GPU smoke script.
+Current status: Stage 3 minimal PyTorch distributed EP baseline on top of the Stage 2 logical dispatch/combine harness. The verified pytest baseline is `python -m pytest -q` with `86 passed`. The distributed dispatch/combine path is validated end-to-end on 2- and 4-process Gloo in CI (asserting bit-for-bit equality with the single-process reference); the NCCL `all_to_all_single` branch is covered by the manual 2-GPU smoke script.
 
 The combine is *sharded* by default: each rank returns only its own source-token rows via the reverse all-to-all, with no extra collective. A legacy `replicate_output=True` mode reproduces the full output with a final `all_reduce` and is kept only for comparison; see [Combine communication](#combine-communication) for the cost difference.
 
-The repository contains deterministic synthetic top-1 routing, explicit metadata including `EPContext`, a grouped/permuted reference MoE FFN, an independent token-by-token oracle, a single-process logical-rank dispatch/combine simulation, and a minimal `torch.distributed` Stage 3 forward path.
+Top-k routing with an expert capacity factor and token dropping is implemented in the single-process reference (`TopKReferenceMoEFFN`), validated against a token-by-token oracle; see [Top-k routing and capacity](#top-k-routing-and-capacity).
 
-It does not contain custom CUDA kernels, raw NCCL calls, Triton, top-2 routing, capacity factor, token dropping, backward logic, or benchmarking.
+The repository contains deterministic synthetic top-1 and top-k routing, a top-k reference MoE FFN with capacity and token dropping, explicit metadata including `EPContext`, a grouped/permuted reference MoE FFN, independent token-by-token oracles, a single-process logical-rank dispatch/combine simulation, a minimal `torch.distributed` Stage 3 forward path, and communication / capacity cost-model benchmarks.
+
+It does not contain custom CUDA kernels, raw NCCL calls, Triton, backward logic, a learned softmax gate, wall-clock benchmarks on real interconnects, or a distributed top-k path (the distributed forward path is still top-1; top-k currently lives in the single-process reference).
 
 ## Documentation
 
@@ -77,6 +79,38 @@ python scripts/bench_combine.py
 This reports communication volume only; wall-clock on real interconnects is
 deferred to the GPU stages. Numerical equivalence of both combine paths is
 covered by `tests/test_distributed_ep_e2e.py`.
+
+## Top-k routing and capacity
+
+`TopKReferenceMoEFFN` selects `k` distinct experts per token and supports an
+expert capacity factor with token dropping. The per-expert capacity is
+`ceil(capacity_factor * num_tokens * k / num_experts)`; assignments beyond an
+expert's capacity are dropped in a deterministic row-major (token, then gate
+slot) order. A dropped assignment contributes nothing to its token's output; the
+token keeps the contributions of its kept experts. The grouped forward and an
+independent token-by-token oracle share the exact same drop mask and are
+asserted equal.
+
+The skew/capacity trade-off, with a hot expert holding 50% of the slot-0 mass
+(`N=4096`, `E=8`, `k=2`), measured by the real drop policy:
+
+| capacity factor | capacity | drop rate | capacity utilization |
+|-----------------|----------|-----------|----------------------|
+| 1.00            | 1024     | 16.2%     | 83.8%                |
+| 1.25            | 1280     | 13.1%     | 69.6%                |
+| 1.50            | 1536     | 9.9%      | 60.0%                |
+| 2.00            | 2048     | 3.7%      | 48.2%                |
+
+A higher capacity factor lowers drops but raises padding (lower utilization).
+The hot expert here carries ~2.3x the mean load, so small capacity factors drop
+heavily. Reproduce with:
+
+```bash
+python scripts/bench_capacity.py
+```
+
+The distributed EP path is still top-1; extending dispatch/combine to top-k with
+capacity is the next stage.
 
 ## Non-Goals
 

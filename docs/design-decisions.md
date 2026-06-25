@@ -16,12 +16,12 @@ These ADRs describe the current project direction after Stage 2. They are allowe
 - Tradeoff: Stage 1 does not measure communication or GPU behavior.
 - Revisit condition: a future invariant cannot be simulated locally and must be validated with a distributed-only test.
 
-## ADR-0003: Top-1 First, Top-2 Later
+## ADR-0003: Top-1 First, Top-k Later
 
-- Decision: Stage 1 and Stage 2 implement top-1 only while metadata names remain compatible with later top-k work.
-- Rationale: top-1 proves the essential layout, dispatch/combine, and oracle path without multi-assignment reduction complexity.
-- Tradeoff: top-2 duplicate token visits and multi-weight reduction are not exercised yet.
-- Revisit condition: the Stage 3 2-GPU baseline is correct for top-1, or top-2 becomes the next smallest correctness gap before Stage 3.
+- Decision: Stage 1 to Stage 3 implement top-1 only; top-k is then added in the single-process reference (`TopKReferenceMoEFFN`) before being pushed into the distributed path.
+- Rationale: top-1 proves the essential layout, dispatch/combine, and oracle path without multi-assignment reduction complexity; top-k is then validated against an oracle in isolation before distributed dispatch/combine inherits its complexity.
+- Status: top-k routing with multi-slot weighted reduction is implemented and oracle-tested in the single-process reference. The distributed EP path is still top-1.
+- Revisit condition: the next stage extends distributed dispatch/combine to top-k with capacity, reusing the reference drop policy as its correctness oracle.
 
 ## ADR-0004: Variable-Size Dispatch Is Core
 
@@ -58,12 +58,12 @@ These ADRs describe the current project direction after Stage 2. They are allowe
 - Tradeoff: the project cannot train end to end in early stages.
 - Revisit condition: forward reference, Stage 2 harness, and Stage 3 2-GPU baseline all pass correctness gates.
 
-## ADR-0009: Capacity Factor And Token Dropping Are Deferred
+## ADR-0009: Capacity Factor And Token Dropping (Reference Implemented)
 
-- Decision: the first project version delivers every routed token and does not implement capacity factor or token dropping.
-- Rationale: dropping tokens intentionally changes outputs and complicates the reference oracle. All-token delivery is the clearer initial invariant.
-- Tradeoff: pathological skew can create large expert batches.
-- Revisit condition: all-token delivery is correct and capacity-limited routing becomes a separately tested mode.
+- Decision: all-token delivery was proven first; capacity factor and token dropping are now implemented as a separately tested mode in the single-process top-k reference (`capacity_factor=None` keeps every token; a finite factor drops per a deterministic policy).
+- Rationale: dropping tokens intentionally changes outputs, so it is validated in isolation against a token-by-token oracle that shares the exact same drop mask before the distributed path inherits it.
+- Drop policy: per-expert capacity is `ceil(capacity_factor * num_tokens * k / num_experts)`; assignments beyond capacity are dropped in row-major (token, then gate slot) order. A dropped assignment contributes nothing; the token keeps its kept experts' contributions.
+- Revisit condition: the distributed dispatch/combine path adopts the same capacity and drop policy, using the reference as its oracle.
 
 ## ADR-0010: Avoid A Vague Mini-DeepEP Clone
 

@@ -5,12 +5,13 @@
 The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations, Stage 2.75 execution-context metadata, and an initial Stage 3 PyTorch distributed EP baseline.
 
 - Command: `python -m pytest -q`
-- Result: `64 passed`
+- Result: `86 passed`
 - Stage 1 implemented: deterministic synthetic top-1 routing, `RouterOutput`, `TokenLayout`, `ExpertPlacement`, `ReferenceTrace`, grouped/permuted reference MoE FFN, and an independent token-by-token oracle.
+- Top-k reference implemented: `TopKRouterOutput`, top-k synthetic routers, `TopKReferenceMoEFFN` with an expert capacity factor and deterministic token dropping, a shared capacity-mask drop policy, an independent token-by-token oracle, and communication / capacity cost-model benchmarks. This is single-process; the distributed path remains top-1.
 - Stage 2 implemented: `TokenAssignment`, rank-aware `TokenLayout`, table-driven `ExpertPlacement`, `DispatchPlan`, `CombinePlan`, `LogicalEPTrace`, and a single-process logical EP dispatch/combine simulation.
 - Stage 2.75 implemented: `ExecutionMode` and `EPContext` metadata for one logical EP execution, with validation against `ExpertPlacement`.
 - Stage 3 implemented: minimal `torch.distributed` forward path with explicit count exchange, variable-size dispatch/combine helpers, local expert execution, and a manual `torchrun` smoke script.
-- Not implemented: custom CUDA kernels, raw NCCL calls, Triton, multiprocessing-managed launch code, top-2 routing, capacity factor, token dropping, backward-specific logic, benchmarks, or `ProfileEvent`.
+- Not implemented: custom CUDA kernels, raw NCCL calls, Triton, a learned softmax gate, a distributed top-k path, backward-specific logic, wall-clock benchmarks on real interconnects, or `ProfileEvent`. (Top-k routing, capacity factor, and token dropping now exist in the single-process reference; the distributed forward path is still top-1.)
 
 Stage 2 simulates logical EP ranks inside one process. Stage 3 adds a real distributed transport boundary, but it is a correctness baseline rather than a performance implementation.
 
@@ -22,7 +23,8 @@ Stage 2 simulates logical EP ranks inside one process. Stage 3 adds a real distr
 
 - Standalone MoE FFN before full Transformer integration.
 - CPU reference correctness and independent oracle comparison.
-- Deterministic synthetic top-1 routing.
+- Deterministic synthetic top-1 and top-k routing.
+- Single-process top-k reference with capacity factor and token dropping.
 - Explicit metadata for routing, execution context, placement, token layout, assignment, dispatch, and combine.
 - Single-process logical-rank dispatch/combine simulation.
 - Minimal 2-rank PyTorch distributed baseline after Stage 2 metadata remains stable.
@@ -34,7 +36,7 @@ Stage 2 simulates logical EP ranks inside one process. Stage 3 adds a real distr
 - Tensor parallelism, pipeline parallelism, data parallelism, speculative decoding, schedulers, autoscaling, HTTP services, or production control planes.
 - Real distributed communication before Stage 3.
 - CUDA/NCCL kernels before correctness and baseline measurements justify them.
-- Top-2 routing, capacity factor, token dropping, and backward propagation in the current implementation.
+- Top-k routing, capacity factor, and token dropping in the distributed path (these exist only in the single-process reference for now), and backward propagation anywhere.
 - Multi-node, RDMA, InfiniBand, FP8, or production deployment.
 
 ## Layered Architecture

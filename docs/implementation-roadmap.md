@@ -42,6 +42,16 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Status: baseline implemented with `torch.distributed` and validated end-to-end by 2- and 4-process Gloo tests in CI (bit-for-bit vs. the single-process reference); the NCCL `all_to_all_single` path still requires a CUDA/NCCL environment via the manual smoke. The combine is now sharded (reverse all-to-all only) by default, removing the full-output `all_reduce`; `scripts/bench_combine.py` reports the per-rank communication reduction (about 3x at P=2 up to 15x at P=8 for balanced routing) and the legacy `all_reduce` combine is retained as `replicate_output=True` for comparison.
 - Kill criteria: collectives can be entered in different order, counts are rank-inconsistent, or output differs from reference beyond tolerance.
 
+## Stage 3.5 - Top-k routing, capacity, and token dropping (reference)
+
+- Goal: add real MoE routing semantics (top-k, capacity factor, token dropping) in the single-process reference before pushing them into the distributed path.
+- Deliverables: `TopKRouterOutput`, top-k synthetic routers, a shared capacity/drop policy (`compute_expert_capacity`, `build_capacity_mask`, `expert_load`), `TopKReferenceMoEFFN` with a token-by-token oracle, and a routing-skew/capacity benchmark (`scripts/bench_capacity.py`).
+- Acceptance tests: grouped output matches the oracle with and without dropping; dropped assignments contribute nothing; `k=1` matches the top-1 reference; capacity formula, drop ordering, and expert-load counts are exact; empty input works.
+- Non-goals: distributed top-k dispatch/combine, a learned softmax gate, and backward.
+- Validation gate: the drop policy is the single source of truth for both the grouped path and the oracle, and the skew benchmark reports load imbalance, drop rate, and capacity utilization from the real policy.
+- Status: implemented in the single-process reference; the distributed path is still top-1.
+- Kill criteria: the grouped path and oracle can drop different assignments, or dropping changes a kept token's output.
+
 ## Stage 4 - 4-GPU scaling and skew experiments
 
 - Goal: check that the 2-GPU design generalizes to 4 GPUs and exposes routing skew behavior.

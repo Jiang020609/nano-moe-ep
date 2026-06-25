@@ -12,7 +12,14 @@ from nano_moe_ep.distributed_ep import (
     source_token_indices,
 )
 from nano_moe_ep.dispatch_combine import LogicalEPTrace, run_logical_ep_moe
-from nano_moe_ep.reference import ReferenceMoEFFN
+from nano_moe_ep.reference import ReferenceMoEFFN, TopKReferenceMoEFFN
+from nano_moe_ep.routing import (
+    build_capacity_mask,
+    compute_expert_capacity,
+    expert_load,
+    route_topk_explicit,
+    route_topk_round_robin,
+)
 from nano_moe_ep.types import (
     CombinePlan,
     DispatchPlan,
@@ -23,6 +30,8 @@ from nano_moe_ep.types import (
     RouterOutput,
     TokenAssignment,
     TokenLayout,
+    TopKReferenceTrace,
+    TopKRouterOutput,
 )
 
 __all__ = [
@@ -41,9 +50,17 @@ __all__ = [
     "RouterOutput",
     "TokenAssignment",
     "TokenLayout",
+    "TopKReferenceMoEFFN",
+    "TopKReferenceTrace",
+    "TopKRouterOutput",
     "apply_partial_combine",
     "apply_sharded_combine",
+    "build_capacity_mask",
     "build_distributed_payload_plan",
+    "compute_expert_capacity",
+    "expert_load",
+    "route_topk_explicit",
+    "route_topk_round_robin",
     "run_distributed_ep_moe",
     "run_logical_ep_moe",
     "source_token_indices",

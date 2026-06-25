@@ -4,7 +4,7 @@ The project tests correctness before distributed scale or optimization. Tests sh
 
 ## Existing Verified Tests
 
-The current verified baseline is `python -m pytest -q` with `74 passed`.
+The current verified baseline is `python -m pytest -q` with `86 passed`.
 
 Existing tests cover:
 
@@ -22,6 +22,9 @@ Existing tests cover:
 - Stage 2 logical EP output matching Stage 1 reference.
 - Stage 2.75 `EPContext` validation, placement world-size agreement, and unchanged logical EP output when context is provided.
 - Stage 3 source-token partitioning, distributed payload count/offset metadata, return-count reversal, and partial combine validation.
+- Top-k routing (distinct experts per token, weight normalization, `k > num_experts` rejection, duplicate-expert rejection).
+- Capacity policy: capacity formula, expert-load counts, row-major drop ordering, zero-capacity dropping.
+- Top-k reference grouped output matching its oracle with and without capacity dropping, dropped assignments contributing nothing, `k=1` matching the top-1 reference, and empty input.
 
 ## Stage 2 Layout And Plan Tests
 
@@ -100,7 +103,7 @@ Distributed stages must prove ranks agree before entering collectives:
 - Stage 1 and Stage 2 fp32 output comparisons use `rtol=1e-5` and `atol=1e-6`.
 - Future GPU comparisons must state dtype, device, backend, max absolute error, and max relative error.
 - Missing assignments, duplicated assignments, invalid ids, and count mismatches are correctness failures, not tolerance issues.
-- Token dropping is not part of the first project version.
+- Token dropping is implemented and tested in the single-process top-k reference; the distributed path does not yet drop tokens.
 
 ## Tests Before Optimization
 

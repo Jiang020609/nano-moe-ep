@@ -435,3 +435,53 @@ class ReferenceTrace:
     router_output: RouterOutput
     token_layout: TokenLayout
     expert_placement: ExpertPlacement
+
+
+@dataclass(frozen=True)
+class TopKRouterOutput:
+    """Top-k router output: each token selects k distinct experts with weights."""
+
+    expert_indices: torch.Tensor
+    weights: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.expert_indices, torch.Tensor):
+            raise ValueError("expert_indices must be a torch.Tensor")
+        if not isinstance(self.weights, torch.Tensor):
+            raise ValueError("weights must be a torch.Tensor")
+        if self.expert_indices.ndim != 2:
+            raise ValueError("expert_indices must have shape [num_tokens, k]")
+        if self.expert_indices.shape[1] < 1:
+            raise ValueError("k must be at least 1")
+        if self.weights.shape != self.expert_indices.shape:
+            raise ValueError("weights must have the same shape as expert_indices")
+        if not _is_integer_tensor(self.expert_indices):
+            raise ValueError("expert_indices must use an integer dtype")
+        if not self.weights.dtype.is_floating_point:
+            raise ValueError("weights must use a floating dtype")
+        if not torch.isfinite(self.weights).all().item():
+            raise ValueError("weights must be finite")
+        if self.expert_indices.numel() > 0 and (self.expert_indices < 0).any().item():
+            raise ValueError("expert_indices must be non-negative")
+        if self.expert_indices.shape[1] > 1 and self.expert_indices.shape[0] > 0:
+            sorted_indices = torch.sort(self.expert_indices, dim=1).values
+            if (sorted_indices[:, 1:] == sorted_indices[:, :-1]).any().item():
+                raise ValueError("each token must select distinct experts")
+
+    @property
+    def num_tokens(self) -> int:
+        return self.expert_indices.shape[0]
+
+    @property
+    def k(self) -> int:
+        return self.expert_indices.shape[1]
+
+
+@dataclass(frozen=True)
+class TopKReferenceTrace:
+    """Trace emitted by the grouped top-k reference path."""
+
+    router_output: TopKRouterOutput
+    expert_load: torch.Tensor
+    capacity: int | None
+    num_dropped: int
