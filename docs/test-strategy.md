@@ -4,7 +4,7 @@ The project tests correctness before distributed scale or optimization. Tests sh
 
 ## Existing Verified Tests
 
-The current verified baseline is `python -m pytest -q` with `71 passed`.
+The current verified baseline is `python -m pytest -q` with `74 passed`.
 
 Existing tests cover:
 
@@ -67,6 +67,13 @@ empty-rank, single-token, and non-unit-weight fixtures. Because Gloo lacks
 `all_to_all_single`, these cover the `_all_gather_variable_tensors` fallback and
 all surrounding orchestration; the NCCL `all_to_all_single` collective itself is
 covered only by the manual smoke below.
+
+Both combine strategies are checked in the same fixtures: the default sharded
+combine (each rank's rows must equal the reference rows for its tokens, and the
+shards must tile every token exactly once and reconstruct the reference) and the
+legacy `replicate_output=True` combine (the full output must match the reference
+on every rank). `apply_sharded_combine` also has direct CPU unit tests for sort
+order, weight-once application, the empty shard, and duplicate-index rejection.
 
 The manual Stage 3 smoke is launched with:
 

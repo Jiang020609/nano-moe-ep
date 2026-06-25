@@ -153,18 +153,23 @@ def ep_worker(
     config = DistributedEPConfig(backend="gloo", world_size=world_size, rank=rank, device="cpu")
 
     with torch.no_grad():
-        dist_output, trace = run_distributed_ep_moe(
+        sharded_output, sharded_trace = run_distributed_ep_moe(
             inputs, router_output, model.experts, placement, config=config
+        )
+        replicated_output, _ = run_distributed_ep_moe(
+            inputs, router_output, model.experts, placement, config=config, replicate_output=True
         )
         logical_output, _ = run_logical_ep_moe(inputs, router_output, model.experts, placement)
         reference_output, _ = model(inputs, router_output)
 
     return {
         "rank": rank,
-        "dist": dist_output,
+        "sharded": sharded_output,
+        "sharded_token_indices": sharded_trace.output_token_indices.cpu(),
+        "replicated": replicated_output,
         "logical": logical_output,
         "reference": reference_output,
-        "owned_experts": trace.owned_experts,
-        "send_counts": trace.send_plan.send_counts_by_rank.cpu(),
-        "recv_counts": trace.dispatch_counts.recv_counts_by_rank.cpu(),
+        "owned_experts": sharded_trace.owned_experts,
+        "send_counts": sharded_trace.send_plan.send_counts_by_rank.cpu(),
+        "recv_counts": sharded_trace.dispatch_counts.recv_counts_by_rank.cpu(),
     }

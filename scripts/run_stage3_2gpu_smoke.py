@@ -92,6 +92,7 @@ def main() -> int:
                 model.experts,
                 placement,
                 config=config,
+                replicate_output=True,
             )
             reference_output, _ = run_logical_ep_moe(inputs, router_output, model.experts, placement)
 

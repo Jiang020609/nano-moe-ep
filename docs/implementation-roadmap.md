@@ -39,7 +39,7 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: both ranks agree on placement, peer order, counts, and phase ids; distributed output matches Stage 1 reference within tolerance.
 - Non-goals: 4-GPU scaling, custom CUDA packing, overlap, backward, serving, or production deployment.
 - Validation gate: 2-GPU balanced, empty-peer, and skewed fixtures pass repeatedly without hangs.
-- Status: baseline implemented with `torch.distributed` and validated end-to-end by 2- and 4-process Gloo tests in CI (bit-for-bit vs. the single-process reference); the NCCL `all_to_all_single` path still requires a CUDA/NCCL environment via the manual smoke.
+- Status: baseline implemented with `torch.distributed` and validated end-to-end by 2- and 4-process Gloo tests in CI (bit-for-bit vs. the single-process reference); the NCCL `all_to_all_single` path still requires a CUDA/NCCL environment via the manual smoke. The combine is now sharded (reverse all-to-all only) by default, removing the full-output `all_reduce`; `scripts/bench_combine.py` reports the per-rank communication reduction (about 3x at P=2 up to 15x at P=8 for balanced routing) and the legacy `all_reduce` combine is retained as `replicate_output=True` for comparison.
 - Kill criteria: collectives can be entered in different order, counts are rank-inconsistent, or output differs from reference beyond tolerance.
 
 ## Stage 4 - 4-GPU scaling and skew experiments

@@ -37,12 +37,35 @@ def _run(world_size, assignments, owner_by_expert, num_experts, *, weights=None,
 
 
 def _assert_matches_references(results):
+    reference = results[0]["reference"]
+    num_tokens = reference.shape[0]
+
     for result in results:
-        torch.testing.assert_close(result["dist"], result["reference"], rtol=RTOL, atol=ATOL)
-        torch.testing.assert_close(result["dist"], result["logical"], rtol=RTOL, atol=ATOL)
-    # The all-reduce combine replicates the full output, so every rank agrees.
+        # Legacy replicated combine: every rank holds the full output.
+        torch.testing.assert_close(result["replicated"], result["reference"], rtol=RTOL, atol=ATOL)
+        torch.testing.assert_close(result["replicated"], result["logical"], rtol=RTOL, atol=ATOL)
+        # Sharded combine: this rank's rows equal the reference rows for its tokens.
+        idx = result["sharded_token_indices"]
+        torch.testing.assert_close(
+            result["sharded"], reference.index_select(0, idx), rtol=RTOL, atol=ATOL
+        )
+        # Shard indices are sorted ascending and within range.
+        assert torch.equal(idx, torch.sort(idx).values)
+        if idx.numel() > 0:
+            assert int(idx.min().item()) >= 0 and int(idx.max().item()) < num_tokens
+
+    # Every rank agrees on the replicated output.
     for result in results[1:]:
-        torch.testing.assert_close(result["dist"], results[0]["dist"], rtol=RTOL, atol=ATOL)
+        torch.testing.assert_close(result["replicated"], results[0]["replicated"], rtol=RTOL, atol=ATOL)
+
+    # The sharded outputs across ranks tile the full token set exactly once and
+    # reconstruct the reference when scattered back into token order.
+    all_idx = torch.cat([result["sharded_token_indices"] for result in results])
+    assert torch.equal(torch.sort(all_idx).values, torch.arange(num_tokens))
+    reconstructed = torch.zeros_like(reference)
+    for result in results:
+        reconstructed.index_copy_(0, result["sharded_token_indices"], result["sharded"])
+    torch.testing.assert_close(reconstructed, reference, rtol=RTOL, atol=ATOL)
 
 
 def test_two_rank_balanced_round_robin():

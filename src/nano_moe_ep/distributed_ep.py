@@ -204,6 +204,8 @@ class DistributedEPTrace:
     return_counts: CountExchange
     owned_experts: tuple[int, ...]
     returned_token_indices: torch.Tensor
+    output_token_indices: torch.Tensor
+    replicate_output: bool
 
 
 def build_distributed_payload_plan(
@@ -442,6 +444,47 @@ def apply_partial_combine(
     return output
 
 
+def apply_sharded_combine(
+    expert_outputs: torch.Tensor,
+    token_indices: torch.Tensor,
+    routing_weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply routing weights and return only this rank's source-token rows.
+
+    Unlike :func:`apply_partial_combine`, this performs no zero-padding to the
+    global token count and no cross-rank collective: the reverse all-to-all has
+    already delivered every source token's expert output back to its owning
+    rank. Rows are returned in ascending source-token-index order so the shard
+    has a deterministic, reconstructable layout.
+    """
+
+    if expert_outputs.ndim != 2:
+        raise ValueError("expert_outputs must have shape [num_tokens, hidden_dim]")
+    if token_indices.shape != (expert_outputs.shape[0],):
+        raise ValueError("token_indices must have one entry per expert output")
+    if not _is_integer_tensor(token_indices):
+        raise ValueError("token_indices must use an integer dtype")
+    if routing_weights.shape != (expert_outputs.shape[0], 1):
+        raise ValueError("routing_weights must have shape [num_outputs, 1]")
+    if not routing_weights.dtype.is_floating_point:
+        raise ValueError("routing_weights must use a floating dtype")
+    if not torch.isfinite(routing_weights).all().item():
+        raise ValueError("routing_weights must be finite")
+    if token_indices.numel() > 0:
+        if (token_indices < 0).any().item():
+            raise ValueError("token_indices must be non-negative")
+        if torch.unique(token_indices).numel() != token_indices.numel():
+            raise ValueError("token_indices must not contain duplicates")
+
+    order = torch.argsort(token_indices)
+    sorted_indices = token_indices.index_select(0, order)
+    weighted_outputs = expert_outputs * routing_weights.to(
+        device=expert_outputs.device, dtype=expert_outputs.dtype
+    )
+    sorted_outputs = weighted_outputs.index_select(0, order.to(device=expert_outputs.device))
+    return sorted_outputs, sorted_indices
+
+
 def _validate_distributed_inputs(
     inputs: torch.Tensor,
     router_output: RouterOutput,
@@ -488,8 +531,21 @@ def run_distributed_ep_moe(
     *,
     config: DistributedEPConfig | None = None,
     group: dist.ProcessGroup | None = None,
+    replicate_output: bool = False,
 ) -> tuple[torch.Tensor, DistributedEPTrace]:
-    """Run the minimal Stage 3 distributed EP forward path."""
+    """Run the minimal Stage 3 distributed EP forward path.
+
+    By default the combine is *sharded*: each rank returns only its own
+    source-token rows (shape ``[num_local_tokens, hidden_dim]``) in ascending
+    token-index order, with the matching token indices available on the trace.
+    This is the realistic EP combine and avoids any extra collective.
+
+    With ``replicate_output=True`` the legacy behaviour is used: every rank
+    returns the full ``[num_tokens, hidden_dim]`` output, assembled with a
+    final ``all_reduce``. This is kept for comparison and convenience; it moves
+    roughly ``2 * (world_size - 1) / world_size * num_tokens * hidden_dim``
+    extra elements per rank versus the sharded path.
+    """
 
     if config is None:
         config = DistributedEPConfig.from_process_group(group=group, device=inputs.device)
@@ -555,13 +611,23 @@ def run_distributed_ep_moe(
     )
     _validate_returned_source_tokens(returned_token_indices, num_tokens=inputs.shape[0], config=config)
 
-    output = apply_partial_combine(
-        returned_outputs,
-        returned_token_indices,
-        returned_routing_weights,
-        num_tokens=inputs.shape[0],
-    )
-    dist.all_reduce(output, op=dist.ReduceOp.SUM, group=group)
+    if replicate_output:
+        output = apply_partial_combine(
+            returned_outputs,
+            returned_token_indices,
+            returned_routing_weights,
+            num_tokens=inputs.shape[0],
+        )
+        dist.all_reduce(output, op=dist.ReduceOp.SUM, group=group)
+        output_token_indices = source_token_indices(
+            inputs.shape[0], rank=config.rank, world_size=config.world_size, device=output.device
+        )
+    else:
+        output, output_token_indices = apply_sharded_combine(
+            returned_outputs,
+            returned_token_indices,
+            returned_routing_weights,
+        )
 
     return output, DistributedEPTrace(
         config=config,
@@ -572,4 +638,6 @@ def run_distributed_ep_moe(
         return_counts=return_counts,
         owned_experts=expert_placement.experts_for_rank(config.rank),
         returned_token_indices=returned_token_indices,
+        output_token_indices=output_token_indices,
+        replicate_output=replicate_output,
     )

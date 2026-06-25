@@ -5,6 +5,7 @@ from nano_moe_ep.distributed_ep import (
     CountExchange,
     DistributedEPConfig,
     apply_partial_combine,
+    apply_sharded_combine,
     build_distributed_payload_plan,
     reverse_count_exchange,
     source_token_indices,
@@ -95,6 +96,32 @@ def test_partial_combine_rejects_duplicate_token_indices():
             torch.ones(2, 1),
             num_tokens=4,
         )
+
+
+def test_sharded_combine_sorts_rows_and_applies_weights_once():
+    expert_outputs = torch.tensor([[2.0, 4.0], [10.0, 20.0]])
+    token_indices = torch.tensor([3, 1])
+    weights = torch.tensor([[0.5], [2.0]])
+
+    output, indices = apply_sharded_combine(expert_outputs, token_indices, weights)
+
+    # Rows are returned in ascending token-index order, weighted exactly once.
+    torch.testing.assert_close(indices, torch.tensor([1, 3]))
+    torch.testing.assert_close(output, torch.tensor([[20.0, 40.0], [1.0, 2.0]]))
+
+
+def test_sharded_combine_handles_empty_shard():
+    output, indices = apply_sharded_combine(
+        torch.empty(0, 3), torch.empty(0, dtype=torch.long), torch.empty(0, 1)
+    )
+
+    assert output.shape == (0, 3)
+    assert indices.shape == (0,)
+
+
+def test_sharded_combine_rejects_duplicate_token_indices():
+    with pytest.raises(ValueError, match="duplicates"):
+        apply_sharded_combine(torch.ones(2, 3), torch.tensor([1, 1]), torch.ones(2, 1))
 
 
 def test_distributed_config_exports_distributed_ep_context():
