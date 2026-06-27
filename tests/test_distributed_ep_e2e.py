@@ -5,7 +5,7 @@ dispatch/combine output matches both the Stage 2 logical simulation and the
 Stage 1 reference, element for element, on every rank.
 
 Gloo exercises the ``_all_gather_variable_tensors`` fallback; the NCCL
-``all_to_all_single`` branch remains covered only by the manual 2-GPU smoke.
+``all_to_all_single`` branch remains covered by the manual N-rank smoke.
 """
 
 from __future__ import annotations

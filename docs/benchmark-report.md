@@ -8,9 +8,9 @@ formula, and per-rank load). They measure *communication volume* and *load*, not
 wall-clock time; wall-clock on real interconnects is deferred to the GPU stages.
 
 Numerical correctness behind every number is covered by the test suite
-(`python -m pytest -q`, currently `104 passed`), including multi-process Gloo
-end-to-end tests that match the distributed paths to the single-process
-reference bit-for-bit.
+(`python -m pytest -q`, currently `104 passed, 1 skipped`), including
+multi-process Gloo end-to-end tests that match the distributed paths to the
+single-process reference bit-for-bit.
 
 ## 1. Combine communication: sharded vs. replicated
 

@@ -2,15 +2,16 @@
 
 ## Current Verified Baseline
 
-The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations, Stage 2.75 execution-context metadata, and an initial Stage 3 PyTorch distributed EP baseline.
+The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations, Stage 2.75 execution-context metadata, a Stage 3 PyTorch distributed EP baseline, and Stage 4 multi-rank NCCL/Gloo correctness validation.
 
 - Command: `python -m pytest -q`
-- Result: `104 passed`
+- Result: `104 passed, 1 skipped`
 - Stage 1 implemented: deterministic synthetic top-1 routing, `RouterOutput`, `TokenLayout`, `ExpertPlacement`, `ReferenceTrace`, grouped/permuted reference MoE FFN, and an independent token-by-token oracle.
 - Top-k implemented: `TopKRouterOutput`, top-k synthetic routers, `TopKReferenceMoEFFN` with an expert capacity factor and deterministic token dropping, a shared capacity-mask drop policy, an independent token-by-token oracle, and communication / capacity cost-model benchmarks. The same routing, capacity, and drop policy run in the distributed path (`run_distributed_topk_ep_moe`), validated bit-for-bit against the reference in multi-process Gloo tests.
 - Stage 2 implemented: `TokenAssignment`, rank-aware `TokenLayout`, table-driven `ExpertPlacement`, `DispatchPlan`, `CombinePlan`, `LogicalEPTrace`, and a single-process logical EP dispatch/combine simulation.
 - Stage 2.75 implemented: `ExecutionMode` and `EPContext` metadata for one logical EP execution, with validation against `ExpertPlacement`.
-- Stage 3 implemented: minimal `torch.distributed` forward path with explicit count exchange, variable-size dispatch/combine helpers, local expert execution, and a manual `torchrun` smoke script.
+- Stage 3 implemented: minimal `torch.distributed` forward path with explicit count exchange, variable-size dispatch/combine helpers, local expert execution, sharded combine, top-k capacity dropping, and a manual `torchrun` smoke script.
+- Stage 4 validated: the general N-rank smoke has passed on 2, 4, and 8 CUDA/NCCL ranks for top-1, top-k, and top-k with capacity dropping; CI covers 2- and 4-rank Gloo E2E correctness.
 - Not implemented: custom CUDA kernels, raw NCCL calls, Triton, a learned softmax gate, backward-specific logic, wall-clock benchmarks on real interconnects, or `ProfileEvent`. (Top-k routing, capacity factor, and token dropping now exist in both the single-process reference and the distributed forward path.)
 
 Stage 2 simulates logical EP ranks inside one process. Stage 3 adds a real distributed transport boundary, but it is a correctness baseline rather than a performance implementation.

@@ -6,7 +6,20 @@
 
 ## Status
 
-Current status: Stage 3 minimal PyTorch distributed EP baseline on top of the Stage 2 logical dispatch/combine harness. The verified pytest baseline is `python -m pytest -q` with `104 passed`. The distributed dispatch/combine path is validated end-to-end on 2- and 4-process Gloo in CI (asserting bit-for-bit equality with the single-process reference); the NCCL `all_to_all_single` branch is covered by the manual 2-GPU smoke script.
+Current status: Stage 4 correctness baseline for the Expert Parallel forward
+path. The Stage 3 PyTorch distributed implementation now runs top-1 EP, top-k
+EP, and top-k EP with capacity dropping on real ranks; the Stage 4 validation
+checks that the same path generalizes beyond 2 GPUs.
+
+Correctness matrix:
+
+| Gate | Backend / device | Coverage | Latest result |
+|------|------------------|----------|---------------|
+| Unit and integration suite | CPU | Reference paths, logical EP, placement, capacity, Gloo E2E | `104 passed, 1 skipped` |
+| CI distributed E2E | CPU / Gloo | 2- and 4-rank top-1 and top-k, including capacity dropping | PASS |
+| Manual NCCL smoke | CUDA / NCCL | 2-GPU top-1, top-k, top-k+capacity | PASS |
+| Manual NCCL smoke | CUDA / NCCL | 4-GPU top-1, top-k, top-k+capacity | PASS |
+| Manual NCCL smoke | CUDA / NCCL | 8-GPU top-1, top-k, top-k+capacity | PASS |
 
 The combine is *sharded* by default: each rank returns only its own source-token rows via the reverse all-to-all, with no extra collective. A legacy `replicate_output=True` mode reproduces the full output with a final `all_reduce` and is kept only for comparison; see [Combine communication](#combine-communication) for the cost difference.
 
@@ -23,6 +36,7 @@ It does not contain custom CUDA kernels, raw NCCL calls, Triton, backward logic,
 - [Implementation roadmap](docs/implementation-roadmap.md)
 - [Test strategy](docs/test-strategy.md)
 - [Benchmark report](docs/benchmark-report.md)
+- [GPU benchmarking](docs/gpu-benchmark.md)
 - [Comparison to production MoE/EP systems](docs/comparison.md)
 
 ## Milestones
@@ -53,8 +67,9 @@ on real ranks: top-1 EP, top-k EP (no capacity), and top-k EP with capacity
 dropping, the last two under a load-aware `balanced_placement`. Each rank prints
 its backend/device, the contiguous vs. balanced max-rank load, and per-check max
 absolute error and PASS/FAIL; rank 0 prints an overall result. Set
-`NANO_MOE_EP_BACKEND=gloo` to force the CPU fallback. The earlier top-1-only
-2-GPU smoke remains at `scripts/run_stage3_2gpu_smoke.py`.
+`NANO_MOE_EP_BACKEND=gloo` to force the CPU fallback. This command has been
+manually verified with `--nproc_per_node=2`, `4`, and `8` on CUDA/NCCL. The
+earlier top-1-only 2-GPU smoke remains at `scripts/run_stage3_2gpu_smoke.py`.
 
 ## Combine communication
 

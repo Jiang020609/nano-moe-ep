@@ -4,7 +4,17 @@ The project tests correctness before distributed scale or optimization. Tests sh
 
 ## Existing Verified Tests
 
-The current verified baseline is `python -m pytest -q` with `104 passed`.
+The current verified baseline is `python -m pytest -q` with `104 passed, 1 skipped`.
+
+Correctness matrix:
+
+| Gate | Backend / device | Coverage | Latest result |
+|------|------------------|----------|---------------|
+| Unit and integration suite | CPU | Reference paths, logical EP, placement, capacity, Gloo E2E | `104 passed, 1 skipped` |
+| CI distributed E2E | CPU / Gloo | 2- and 4-rank top-1 and top-k, including capacity dropping | PASS |
+| Manual NCCL smoke | CUDA / NCCL | 2-GPU top-1, top-k, top-k+capacity | PASS |
+| Manual NCCL smoke | CUDA / NCCL | 4-GPU top-1, top-k, top-k+capacity | PASS |
+| Manual NCCL smoke | CUDA / NCCL | 8-GPU top-1, top-k, top-k+capacity | PASS |
 
 Existing tests cover:
 
@@ -72,7 +82,7 @@ Stage 1 reference, on every rank, across balanced, all-to-one-skew, empty-expert
 empty-rank, single-token, and non-unit-weight fixtures. Because Gloo lacks
 `all_to_all_single`, these cover the `_all_gather_variable_tensors` fallback and
 all surrounding orchestration; the NCCL `all_to_all_single` collective itself is
-covered only by the manual smoke below.
+covered by the manual multi-GPU smoke below.
 
 Both combine strategies are checked in the same fixtures: the default sharded
 combine (each rank's rows must equal the reference rows for its tokens, and the
@@ -81,13 +91,18 @@ legacy `replicate_output=True` combine (the full output must match the reference
 on every rank). `apply_sharded_combine` also has direct CPU unit tests for sort
 order, weight-once application, the empty shard, and duplicate-index rejection.
 
-The manual Stage 3 smoke is launched with:
+The manual multi-GPU smoke is launched with:
 
 ```bash
-torchrun --standalone --nproc_per_node=2 scripts/run_stage3_2gpu_smoke.py
+torchrun --standalone --nproc_per_node=8 scripts/run_nccl_ep_smoke.py
 ```
 
-It uses NCCL only when two CUDA devices and NCCL are available; otherwise it falls back to CPU/Gloo. The smoke is correctness-only and must not be interpreted as a benchmark.
+It uses NCCL when enough CUDA devices and NCCL are available; otherwise it falls
+back to CPU/Gloo. The smoke validates top-1 EP, top-k EP, and top-k EP with
+capacity dropping. It has been manually verified with 2, 4, and 8 CUDA/NCCL
+ranks. The older top-1-only 2-GPU smoke remains available at
+`scripts/run_stage3_2gpu_smoke.py`. These smokes are correctness-only and must
+not be interpreted as benchmarks.
 
 ## Collective Ordering Tests
 
@@ -104,9 +119,9 @@ Distributed stages must prove ranks agree before entering collectives:
 
 - Metadata equality is exact: token ids, assignment ids, expert ids, rank ids, offsets, counts, and top-k slots.
 - Stage 1 and Stage 2 fp32 output comparisons use `rtol=1e-5` and `atol=1e-6`.
-- Future GPU comparisons must state dtype, device, backend, max absolute error, and max relative error.
+- GPU comparisons state dtype, device, backend, max absolute error, and PASS/FAIL status.
 - Missing assignments, duplicated assignments, invalid ids, and count mismatches are correctness failures, not tolerance issues.
-- Token dropping is implemented and tested in the single-process top-k reference; the distributed path does not yet drop tokens.
+- Token dropping is implemented and tested in the single-process top-k reference and in the distributed top-k path; both use the same deterministic capacity mask.
 
 ## Tests Before Optimization
 
@@ -114,16 +129,17 @@ Before any packing/permutation or communication optimization:
 
 - Stage 1 reference tests pass.
 - Stage 2 deterministic dispatch/combine tests pass.
-- Stage 3 2-GPU reference-equivalence tests pass if the optimization touches distributed movement.
+- Stage 3/4 reference-equivalence tests pass if the optimization touches distributed movement.
 - Empty, balanced, skewed, one-token, all-to-one, uneven-placement, and non-contiguous input cases pass.
 - The targeted phase has a baseline measurement and named fixture.
 - The fallback non-optimized path remains available and tested.
 
-## Tests Before 4-GPU Work
+## Tests Before Further GPU Optimization
 
-Before moving from 2 GPUs to 4 GPUs:
+Before moving from the current correctness baseline to performance-oriented GPU
+work:
 
-- 2-GPU balanced, empty-peer, empty-expert, and hot-expert fixtures pass.
+- 2-, 4-, and 8-GPU NCCL smoke tests pass for top-1, top-k, and top-k with capacity dropping.
 - Per-rank count reconciliation passes for dispatch and combine.
 - Collective ordering checks are logged and auditable.
 - Expert placement is immutable within a forward pass.

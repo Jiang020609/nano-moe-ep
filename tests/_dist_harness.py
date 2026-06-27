@@ -9,7 +9,7 @@ name on every platform, including Windows ``spawn`` start semantics.
 Coverage note: the Gloo backend exercises the ``_all_gather_variable_tensors``
 fallback, not the NCCL ``all_to_all_single`` branch. The orchestration, count
 exchange, reverse exchange, expert execution, and combine are all covered here;
-the NCCL collective itself is only covered by the manual 2-GPU smoke script.
+the NCCL collective itself is covered by the manual N-rank smoke script.
 """
 
 from __future__ import annotations

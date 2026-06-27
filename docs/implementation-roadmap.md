@@ -19,7 +19,7 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: grouped output matches oracle; token order and counts are validated; non-unit weights are applied once; non-contiguous input works.
 - Non-goals: distributed EP, CUDA/NCCL, top-2, capacity factor, token dropping, backward, serving, or benchmarking.
 - Validation gate: Stage 1 tests pass on CPU with fixed seeds and `rtol=1e-5`, `atol=1e-6`.
-- Status: complete and still covered by the current `64 passed` suite.
+- Status: complete and still covered by the current `104 passed, 1 skipped` suite.
 - Kill criteria: nondeterministic reference output, token loss/duplication, ambiguous inverse permutation semantics, or hidden weight application.
 
 ## Stage 2 - Deterministic dispatch/combine harness
@@ -29,7 +29,7 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: every assignment is packed once, every output combines once, empty experts/ranks are represented, payload order matches layout permutation, invalid placement is rejected, and logical EP output matches Stage 1 reference.
 - Non-goals: real `torch.distributed`, GPUs, CUDA kernels, NCCL, benchmarks, overlap, top-2, or backward.
 - Validation gate: deterministic fixtures cover balanced routing, all-to-one skew, empty experts, empty ranks, uneven placement, non-unit weights, non-contiguous input, and failure injection for duplicate/missing tokens.
-- Status: implemented; Stage 2.75 execution-context metadata is in place; current verified suite is `python -m pytest -q` with `64 passed`.
+- Status: implemented; Stage 2.75 execution-context metadata is in place; current verified suite is `python -m pytest -q` with `104 passed, 1 skipped`.
 - Kill criteria: assignment identity is lost, counts do not reconcile, combine order is ambiguous, payload order can diverge from layout, or output cannot be compared to Stage 1 reference.
 
 ## Stage 3 - 2-GPU EP baseline
@@ -39,7 +39,7 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: both ranks agree on placement, peer order, counts, and phase ids; distributed output matches Stage 1 reference within tolerance.
 - Non-goals: 4-GPU scaling, custom CUDA packing, overlap, backward, serving, or production deployment.
 - Validation gate: 2-GPU balanced, empty-peer, and skewed fixtures pass repeatedly without hangs.
-- Status: baseline implemented with `torch.distributed` and validated end-to-end by 2- and 4-process Gloo tests in CI (bit-for-bit vs. the single-process reference); the NCCL `all_to_all_single` path still requires a CUDA/NCCL environment via the manual smoke. The combine is now sharded (reverse all-to-all only) by default, removing the full-output `all_reduce`; `scripts/bench_combine.py` reports the per-rank communication reduction (about 3x at P=2 up to 15x at P=8 for balanced routing) and the legacy `all_reduce` combine is retained as `replicate_output=True` for comparison.
+- Status: baseline implemented with `torch.distributed` and validated end-to-end by 2- and 4-process Gloo tests in CI (bit-for-bit vs. the single-process reference); the NCCL `all_to_all_single` path has been manually smoke-tested on 2, 4, and 8 CUDA ranks via `scripts/run_nccl_ep_smoke.py`. The combine is now sharded (reverse all-to-all only) by default, removing the full-output `all_reduce`; `scripts/bench_combine.py` reports the per-rank communication reduction (about 3x at P=2 up to 15x at P=8 for balanced routing) and the legacy `all_reduce` combine is retained as `replicate_output=True` for comparison.
 - Kill criteria: collectives can be entered in different order, counts are rank-inconsistent, or output differs from reference beyond tolerance.
 
 ## Stage 3.5 - Top-k routing, capacity, and token dropping (reference)
@@ -59,7 +59,7 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Acceptance tests: 4-rank output matches reference; empty-rank and hot-expert cases pass; per-rank token counts and bytes are recorded.
 - Non-goals: multi-node, RDMA, InfiniBand, dynamic expert migration, or custom kernels.
 - Validation gate: every 4-GPU correctness failure is reproducible in a deterministic local or 2-GPU fixture.
-- Status: not started.
+- Status: correctness validation complete for the current PyTorch distributed baseline: the general N-rank smoke passes on 4 CUDA/NCCL ranks, and the same command has also passed on 8 ranks. Routing-skew behavior is exposed through the load-aware placement and capacity benchmarks; wall-clock profiling remains future work.
 - Kill criteria: profiling cannot explain skew, rank count disagreement persists, or correctness depends on fixture-specific assumptions.
 
 ## Stage 4.5 - Load-aware expert placement (cost model)
