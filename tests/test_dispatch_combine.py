@@ -146,6 +146,28 @@ def test_non_unit_routing_weights_are_applied_exactly_once():
     torch.testing.assert_close(trace.combine_plan.routing_weights, weights.index_select(0, trace.token_layout.permutation))
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for device-mismatch regression coverage")
+def test_cuda_router_weights_are_indexed_with_cuda_indices():
+    model, inputs = _model_and_inputs(seed=66, num_tokens=6)
+    device = torch.device("cuda")
+    model = model.to(device)
+    inputs = inputs.to(device)
+    expert_indices = torch.tensor([[0], [1], [2], [3], [0], [1]], device=device)
+    weights = torch.tensor([[0.25], [0.5], [0.75], [1.0], [1.25], [1.5]], device=device)
+    router_output = RouterOutput(expert_indices=expert_indices, weights=weights)
+    placement = ExpertPlacement.from_rank_experts(
+        {0: [0, 2], 1: [1, 3]},
+        num_experts=model.num_experts,
+        num_ep_ranks=2,
+    )
+
+    stage2_output, trace = run_logical_ep_moe(inputs, router_output, model.experts, placement)
+
+    torch.testing.assert_close(stage2_output, model.token_by_token_oracle(inputs, router_output), rtol=RTOL, atol=ATOL)
+    assert trace.combine_plan.token_indices.device.type == "cpu"
+    assert trace.combine_plan.routing_weights.device.type == "cuda"
+
+
 def test_token_order_is_restored_exactly_after_combine():
     model, inputs = _model_and_inputs(seed=7, num_tokens=7)
     router_output = route_explicit([2, 0, 3, 1, 2, 0, 3], num_experts=model.num_experts)

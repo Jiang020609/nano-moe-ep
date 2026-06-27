@@ -204,7 +204,8 @@ def build_combine_plan(dispatch_plan: DispatchPlan, router_output: RouterOutput)
     """Build the plan that restores expert outputs to original token order."""
 
     token_indices = dispatch_plan.layout.permutation
-    weights = router_output.weights.index_select(0, token_indices)
+    weight_indices = token_indices.to(device=router_output.weights.device)
+    weights = router_output.weights.index_select(0, weight_indices)
     return CombinePlan(
         token_indices=token_indices,
         routing_weights=weights,
