@@ -71,3 +71,10 @@ These ADRs describe the current project direction after Stage 2. They are allowe
 - Rationale: copying broad production framework shapes would obscure the learning objective and create a worse version of existing systems.
 - Tradeoff: many production features are intentionally absent.
 - Revisit condition: the final benchmark report is complete and a new project objective is chosen deliberately.
+
+## ADR-0011: Load-Aware Placement Keeps Even Expert Counts
+
+- Decision: `balanced_placement` minimizes the max-rank load with a capacitated longest-processing-time heuristic while keeping the per-rank expert count identical to the contiguous baseline.
+- Rationale: equal expert count per rank keeps per-rank memory identical, so the comparison against contiguous placement is apples-to-apples and the only variable is which experts share a rank; the bottleneck rank is what gates the EP step.
+- Tradeoff: under equal cardinality, a single hot expert is a hard floor on the max-rank load (it cannot be split), so placement alone cannot fully balance extreme skew.
+- Revisit condition: expert splitting/replication or dynamic migration becomes necessary because a single expert's load exceeds an acceptable per-rank budget.

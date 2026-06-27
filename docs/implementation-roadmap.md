@@ -62,6 +62,16 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Status: not started.
 - Kill criteria: profiling cannot explain skew, rank count disagreement persists, or correctness depends on fixture-specific assumptions.
 
+## Stage 4.5 - Load-aware expert placement (cost model)
+
+- Goal: replace count-balanced-but-load-oblivious placement with a load-aware placement that lowers the max-rank (bottleneck) load under routing skew.
+- Deliverables: a placement cost model (`rank_load`, `max_rank_load`, `load_imbalance`), a `contiguous_placement` baseline, a capacitated-LPT `balanced_placement`, a Zipf-skew placement benchmark (`scripts/bench_placement.py`), and a distributed top-k e2e test under a non-contiguous balanced placement.
+- Acceptance tests: balanced placement keeps even per-rank expert counts, lowers the bottleneck under skew, is deterministic, and preserves distributed top-k correctness.
+- Non-goals: dynamic expert migration, expert splitting/replication, and a learned cost model.
+- Validation gate: balanced placement is never worse than contiguous at the bottleneck rank, and the benchmark quantifies the reduction (about 1.4-1.7x on a Zipf-1 load).
+- Status: implemented; plugs into the existing `ExpertPlacement` input, so no dispatch/combine changes are required.
+- Kill criteria: balanced placement changes per-rank expert counts, is non-deterministic, or alters distributed output versus the reference.
+
 ## Stage 5 - GPU-side packing/permutation optimization
 
 - Goal: reduce a measured packing/permutation bottleneck while preserving metadata contracts.

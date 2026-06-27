@@ -6,13 +6,13 @@
 
 ## Status
 
-Current status: Stage 3 minimal PyTorch distributed EP baseline on top of the Stage 2 logical dispatch/combine harness. The verified pytest baseline is `python -m pytest -q` with `95 passed`. The distributed dispatch/combine path is validated end-to-end on 2- and 4-process Gloo in CI (asserting bit-for-bit equality with the single-process reference); the NCCL `all_to_all_single` branch is covered by the manual 2-GPU smoke script.
+Current status: Stage 3 minimal PyTorch distributed EP baseline on top of the Stage 2 logical dispatch/combine harness. The verified pytest baseline is `python -m pytest -q` with `104 passed`. The distributed dispatch/combine path is validated end-to-end on 2- and 4-process Gloo in CI (asserting bit-for-bit equality with the single-process reference); the NCCL `all_to_all_single` branch is covered by the manual 2-GPU smoke script.
 
 The combine is *sharded* by default: each rank returns only its own source-token rows via the reverse all-to-all, with no extra collective. A legacy `replicate_output=True` mode reproduces the full output with a final `all_reduce` and is kept only for comparison; see [Combine communication](#combine-communication) for the cost difference.
 
 Top-k routing with an expert capacity factor and token dropping is implemented both in the single-process reference (`TopKReferenceMoEFFN`) and in the distributed path (`run_distributed_topk_ep_moe`), the latter validated bit-for-bit against the reference in multi-process Gloo tests; see [Top-k routing and capacity](#top-k-routing-and-capacity).
 
-The repository contains deterministic synthetic top-1 and top-k routing, a top-k reference MoE FFN with capacity and token dropping, explicit metadata including `EPContext`, a grouped/permuted reference MoE FFN, independent token-by-token oracles, a single-process logical-rank dispatch/combine simulation, minimal `torch.distributed` top-1 and top-k forward paths (the latter with capacity dropping), and communication / capacity cost-model benchmarks.
+The repository contains deterministic synthetic top-1 and top-k routing, a top-k reference MoE FFN with capacity and token dropping, explicit metadata including `EPContext`, a grouped/permuted reference MoE FFN, independent token-by-token oracles, a single-process logical-rank dispatch/combine simulation, minimal `torch.distributed` top-1 and top-k forward paths (the latter with capacity dropping), a load-aware expert placement cost model, and communication / capacity / placement cost-model benchmarks.
 
 It does not contain custom CUDA kernels, raw NCCL calls, Triton, backward logic, a learned softmax gate, or wall-clock benchmarks on real interconnects.
 
@@ -115,6 +115,33 @@ rank from the replicated router output, so distributed dropping matches the
 reference exactly. Each token's kept slots originate on, and return to, its owner
 rank, where they are summed; multi-process Gloo tests assert bit-for-bit equality
 with `TopKReferenceMoEFFN`, including capacity-dropping fixtures.
+
+## Expert placement
+
+The default contiguous placement pins consecutive experts to each rank: it is
+balanced in expert *count* but oblivious to *load*, so under skew the hot experts
+cluster on one rank and gate the EP step. `balanced_placement` is a capacitated
+longest-processing-time heuristic that keeps the same per-rank expert count while
+minimizing the max-rank (bottleneck) load, and `rank_load` / `max_rank_load` /
+`load_imbalance` score any placement against a per-expert load vector. A
+load-aware `ExpertPlacement` plugs straight into the distributed top-k path.
+
+Bottleneck per-rank load on a Zipf-skewed load (`E=16`, total `8192`, exponent 1):
+
+| P | contiguous max | balanced max | contiguous imbalance | balanced imbalance | reduction |
+|---|----------------|--------------|----------------------|--------------------|-----------|
+| 2 | 6587           | 4242         | 1.61x                | 1.04x              | 1.55x     |
+| 4 | 5049           | 2909         | 2.47x                | 1.42x              | 1.74x     |
+| 8 | 3635           | 2574         | 3.55x                | 2.51x              | 1.41x     |
+
+Same per-rank expert count, only the assignment changes, so this trades no extra
+memory for a 1.4-1.7x lower bottleneck. (At `P=8` the single hottest expert,
+load 2423, is a hard floor under equal cardinality, which motivates future expert
+splitting/replication.) Reproduce with:
+
+```bash
+python scripts/bench_placement.py
+```
 
 ## Non-Goals
 

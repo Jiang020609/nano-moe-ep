@@ -5,7 +5,7 @@
 The repository currently contains Stage 1 and Stage 2 CPU-compatible implementations, Stage 2.75 execution-context metadata, and an initial Stage 3 PyTorch distributed EP baseline.
 
 - Command: `python -m pytest -q`
-- Result: `95 passed`
+- Result: `104 passed`
 - Stage 1 implemented: deterministic synthetic top-1 routing, `RouterOutput`, `TokenLayout`, `ExpertPlacement`, `ReferenceTrace`, grouped/permuted reference MoE FFN, and an independent token-by-token oracle.
 - Top-k implemented: `TopKRouterOutput`, top-k synthetic routers, `TopKReferenceMoEFFN` with an expert capacity factor and deterministic token dropping, a shared capacity-mask drop policy, an independent token-by-token oracle, and communication / capacity cost-model benchmarks. The same routing, capacity, and drop policy run in the distributed path (`run_distributed_topk_ep_moe`), validated bit-for-bit against the reference in multi-process Gloo tests.
 - Stage 2 implemented: `TokenAssignment`, rank-aware `TokenLayout`, table-driven `ExpertPlacement`, `DispatchPlan`, `CombinePlan`, `LogicalEPTrace`, and a single-process logical EP dispatch/combine simulation.
@@ -25,6 +25,7 @@ Stage 2 simulates logical EP ranks inside one process. Stage 3 adds a real distr
 - CPU reference correctness and independent oracle comparison.
 - Deterministic synthetic top-1 and top-k routing.
 - Single-process top-k reference with capacity factor and token dropping.
+- Load-aware expert placement cost model and a balanced placement heuristic.
 - Explicit metadata for routing, execution context, placement, token layout, assignment, dispatch, and combine.
 - Single-process logical-rank dispatch/combine simulation.
 - Minimal 2-rank PyTorch distributed baseline after Stage 2 metadata remains stable.

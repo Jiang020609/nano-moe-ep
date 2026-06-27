@@ -11,6 +11,8 @@ import pytest
 import torch
 
 from _dist_harness import gloo_available, run_in_processes, topk_ep_worker
+from nano_moe_ep.placement import balanced_placement, contiguous_placement, max_rank_load
+from nano_moe_ep.routing import expert_load, route_topk_explicit
 
 pytestmark = pytest.mark.skipif(not gloo_available(), reason="torch.distributed Gloo backend is unavailable")
 
@@ -108,3 +110,18 @@ def test_four_rank_topk_with_capacity_dropping():
     _assert_matches_reference(results)
     total_dropped = sum(result["num_local_dropped"] for result in results)
     assert total_dropped == results[0]["ref_num_dropped"]
+
+
+def test_two_rank_topk_with_balanced_placement_is_correct_and_better_balanced():
+    # Skew toward experts 0 and 1 so contiguous placement clusters the hot experts.
+    assignments = [[0, 1]] * 8 + [[0, 2], [1, 3], [2, 3], [0, 1]]
+    load = expert_load(route_topk_explicit(assignments, num_experts=4), 4)
+    balanced = balanced_placement(load, 2)
+    contiguous = contiguous_placement(4, 2)
+
+    # The load-aware placement must not be worse at the bottleneck rank.
+    assert max_rank_load(balanced, load) <= max_rank_load(contiguous, load)
+
+    # Distributed top-k must stay correct under the non-contiguous placement.
+    results = _run(2, assignments, balanced.owner_rank_by_expert, 4)
+    _assert_matches_reference(results)

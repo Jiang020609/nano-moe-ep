@@ -15,6 +15,13 @@ from nano_moe_ep.distributed_ep import (
     source_token_indices,
 )
 from nano_moe_ep.dispatch_combine import LogicalEPTrace, run_logical_ep_moe
+from nano_moe_ep.placement import (
+    balanced_placement,
+    contiguous_placement,
+    load_imbalance,
+    max_rank_load,
+    rank_load,
+)
 from nano_moe_ep.reference import ReferenceMoEFFN, TopKReferenceMoEFFN
 from nano_moe_ep.routing import (
     build_capacity_mask,
@@ -59,11 +66,16 @@ __all__ = [
     "apply_partial_combine",
     "apply_sharded_combine",
     "apply_sharded_topk_combine",
+    "balanced_placement",
     "build_capacity_mask",
     "build_distributed_payload_plan",
     "build_distributed_topk_payload_plan",
     "compute_expert_capacity",
+    "contiguous_placement",
     "expert_load",
+    "load_imbalance",
+    "max_rank_load",
+    "rank_load",
     "route_topk_explicit",
     "route_topk_round_robin",
     "run_distributed_ep_moe",
