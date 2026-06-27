@@ -6,15 +6,15 @@
 
 ## Status
 
-Current status: Stage 3 minimal PyTorch distributed EP baseline on top of the Stage 2 logical dispatch/combine harness. The verified pytest baseline is `python -m pytest -q` with `86 passed`. The distributed dispatch/combine path is validated end-to-end on 2- and 4-process Gloo in CI (asserting bit-for-bit equality with the single-process reference); the NCCL `all_to_all_single` branch is covered by the manual 2-GPU smoke script.
+Current status: Stage 3 minimal PyTorch distributed EP baseline on top of the Stage 2 logical dispatch/combine harness. The verified pytest baseline is `python -m pytest -q` with `95 passed`. The distributed dispatch/combine path is validated end-to-end on 2- and 4-process Gloo in CI (asserting bit-for-bit equality with the single-process reference); the NCCL `all_to_all_single` branch is covered by the manual 2-GPU smoke script.
 
 The combine is *sharded* by default: each rank returns only its own source-token rows via the reverse all-to-all, with no extra collective. A legacy `replicate_output=True` mode reproduces the full output with a final `all_reduce` and is kept only for comparison; see [Combine communication](#combine-communication) for the cost difference.
 
-Top-k routing with an expert capacity factor and token dropping is implemented in the single-process reference (`TopKReferenceMoEFFN`), validated against a token-by-token oracle; see [Top-k routing and capacity](#top-k-routing-and-capacity).
+Top-k routing with an expert capacity factor and token dropping is implemented both in the single-process reference (`TopKReferenceMoEFFN`) and in the distributed path (`run_distributed_topk_ep_moe`), the latter validated bit-for-bit against the reference in multi-process Gloo tests; see [Top-k routing and capacity](#top-k-routing-and-capacity).
 
-The repository contains deterministic synthetic top-1 and top-k routing, a top-k reference MoE FFN with capacity and token dropping, explicit metadata including `EPContext`, a grouped/permuted reference MoE FFN, independent token-by-token oracles, a single-process logical-rank dispatch/combine simulation, a minimal `torch.distributed` Stage 3 forward path, and communication / capacity cost-model benchmarks.
+The repository contains deterministic synthetic top-1 and top-k routing, a top-k reference MoE FFN with capacity and token dropping, explicit metadata including `EPContext`, a grouped/permuted reference MoE FFN, independent token-by-token oracles, a single-process logical-rank dispatch/combine simulation, minimal `torch.distributed` top-1 and top-k forward paths (the latter with capacity dropping), and communication / capacity cost-model benchmarks.
 
-It does not contain custom CUDA kernels, raw NCCL calls, Triton, backward logic, a learned softmax gate, wall-clock benchmarks on real interconnects, or a distributed top-k path (the distributed forward path is still top-1; top-k currently lives in the single-process reference).
+It does not contain custom CUDA kernels, raw NCCL calls, Triton, backward logic, a learned softmax gate, or wall-clock benchmarks on real interconnects.
 
 ## Documentation
 
@@ -109,8 +109,12 @@ heavily. Reproduce with:
 python scripts/bench_capacity.py
 ```
 
-The distributed EP path is still top-1; extending dispatch/combine to top-k with
-capacity is the next stage.
+The same top-k routing, capacity, and drop policy run in the distributed path via
+`run_distributed_topk_ep_moe`: the capacity mask is computed identically on every
+rank from the replicated router output, so distributed dropping matches the
+reference exactly. Each token's kept slots originate on, and return to, its owner
+rank, where they are summed; multi-process Gloo tests assert bit-for-bit equality
+with `TopKReferenceMoEFFN`, including capacity-dropping fixtures.
 
 ## Non-Goals
 

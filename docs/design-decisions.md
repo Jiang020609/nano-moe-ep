@@ -20,8 +20,8 @@ These ADRs describe the current project direction after Stage 2. They are allowe
 
 - Decision: Stage 1 to Stage 3 implement top-1 only; top-k is then added in the single-process reference (`TopKReferenceMoEFFN`) before being pushed into the distributed path.
 - Rationale: top-1 proves the essential layout, dispatch/combine, and oracle path without multi-assignment reduction complexity; top-k is then validated against an oracle in isolation before distributed dispatch/combine inherits its complexity.
-- Status: top-k routing with multi-slot weighted reduction is implemented and oracle-tested in the single-process reference. The distributed EP path is still top-1.
-- Revisit condition: the next stage extends distributed dispatch/combine to top-k with capacity, reusing the reference drop policy as its correctness oracle.
+- Status: top-k routing with multi-slot weighted reduction is implemented and oracle-tested in the single-process reference, and the distributed path (`run_distributed_topk_ep_moe`) now runs the same top-k dispatch/combine with capacity dropping, validated bit-for-bit against the reference in multi-process tests.
+- Revisit condition: a learned softmax gate or a top-k-aware expert placement cost model becomes the next correctness or efficiency gap.
 
 ## ADR-0004: Variable-Size Dispatch Is Core
 
@@ -63,7 +63,7 @@ These ADRs describe the current project direction after Stage 2. They are allowe
 - Decision: all-token delivery was proven first; capacity factor and token dropping are now implemented as a separately tested mode in the single-process top-k reference (`capacity_factor=None` keeps every token; a finite factor drops per a deterministic policy).
 - Rationale: dropping tokens intentionally changes outputs, so it is validated in isolation against a token-by-token oracle that shares the exact same drop mask before the distributed path inherits it.
 - Drop policy: per-expert capacity is `ceil(capacity_factor * num_tokens * k / num_experts)`; assignments beyond capacity are dropped in row-major (token, then gate slot) order. A dropped assignment contributes nothing; the token keeps its kept experts' contributions.
-- Revisit condition: the distributed dispatch/combine path adopts the same capacity and drop policy, using the reference as its oracle.
+- Status: the distributed dispatch/combine path adopts the exact same capacity and drop policy (the mask is recomputed identically on every rank from the replicated router output), using the reference as its oracle in multi-process tests.
 
 ## ADR-0010: Avoid A Vague Mini-DeepEP Clone
 

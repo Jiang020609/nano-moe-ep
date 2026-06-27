@@ -4,7 +4,7 @@ The project tests correctness before distributed scale or optimization. Tests sh
 
 ## Existing Verified Tests
 
-The current verified baseline is `python -m pytest -q` with `86 passed`.
+The current verified baseline is `python -m pytest -q` with `95 passed`.
 
 Existing tests cover:
 
@@ -25,6 +25,8 @@ Existing tests cover:
 - Top-k routing (distinct experts per token, weight normalization, `k > num_experts` rejection, duplicate-expert rejection).
 - Capacity policy: capacity formula, expert-load counts, row-major drop ordering, zero-capacity dropping.
 - Top-k reference grouped output matching its oracle with and without capacity dropping, dropped assignments contributing nothing, `k=1` matching the top-1 reference, and empty input.
+- Distributed top-k payload planning (slot expansion, destination grouping, masked-slot dropping) and the top-k sharded combine (summing kept slots per token, rejecting tokens outside the owned set).
+- Multi-process (2- and 4-rank Gloo) distributed top-k forward matching the top-k reference bit-for-bit, with and without capacity dropping, including that distributed and reference drop counts agree.
 
 ## Stage 2 Layout And Plan Tests
 

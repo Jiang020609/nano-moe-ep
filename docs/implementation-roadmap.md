@@ -47,10 +47,10 @@ This roadmap is strict. Each stage must pass its validation gate before later-st
 - Goal: add real MoE routing semantics (top-k, capacity factor, token dropping) in the single-process reference before pushing them into the distributed path.
 - Deliverables: `TopKRouterOutput`, top-k synthetic routers, a shared capacity/drop policy (`compute_expert_capacity`, `build_capacity_mask`, `expert_load`), `TopKReferenceMoEFFN` with a token-by-token oracle, and a routing-skew/capacity benchmark (`scripts/bench_capacity.py`).
 - Acceptance tests: grouped output matches the oracle with and without dropping; dropped assignments contribute nothing; `k=1` matches the top-1 reference; capacity formula, drop ordering, and expert-load counts are exact; empty input works.
-- Non-goals: distributed top-k dispatch/combine, a learned softmax gate, and backward.
+- Non-goals: a learned softmax gate, and backward.
 - Validation gate: the drop policy is the single source of truth for both the grouped path and the oracle, and the skew benchmark reports load imbalance, drop rate, and capacity utilization from the real policy.
-- Status: implemented in the single-process reference; the distributed path is still top-1.
-- Kill criteria: the grouped path and oracle can drop different assignments, or dropping changes a kept token's output.
+- Status: implemented in the single-process reference and extended to the distributed path (`run_distributed_topk_ep_moe`), which runs the same top-k dispatch/combine with capacity dropping and is validated bit-for-bit against the reference in 2- and 4-process Gloo tests.
+- Kill criteria: the grouped path and oracle can drop different assignments, dropping changes a kept token's output, or distributed dropping diverges from the reference.
 
 ## Stage 4 - 4-GPU scaling and skew experiments
 

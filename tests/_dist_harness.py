@@ -35,10 +35,14 @@ for _path in (str(_THIS_DIR), str(_SRC_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from nano_moe_ep.distributed_ep import DistributedEPConfig, run_distributed_ep_moe
+from nano_moe_ep.distributed_ep import (
+    DistributedEPConfig,
+    run_distributed_ep_moe,
+    run_distributed_topk_ep_moe,
+)
 from nano_moe_ep.dispatch_combine import run_logical_ep_moe
-from nano_moe_ep.reference import ReferenceMoEFFN
-from nano_moe_ep.types import ExpertPlacement, RouterOutput
+from nano_moe_ep.reference import ReferenceMoEFFN, TopKReferenceMoEFFN
+from nano_moe_ep.types import ExpertPlacement, RouterOutput, TopKRouterOutput
 
 
 def gloo_available() -> bool:
@@ -170,6 +174,61 @@ def ep_worker(
         "logical": logical_output,
         "reference": reference_output,
         "owned_experts": sharded_trace.owned_experts,
+        "send_counts": sharded_trace.send_plan.send_counts_by_rank.cpu(),
+        "recv_counts": sharded_trace.dispatch_counts.recv_counts_by_rank.cpu(),
+    }
+
+
+def topk_ep_worker(
+    rank: int,
+    world_size: int,
+    inputs: torch.Tensor,
+    assignments,
+    weights,
+    owner_by_expert,
+    num_experts: int,
+    hidden_dim: int,
+    ffn_dim: int,
+    capacity_factor,
+    seed: int,
+) -> dict:
+    """Run the distributed top-k EP path and the top-k reference inside one rank."""
+
+    torch.manual_seed(seed)
+    model = TopKReferenceMoEFFN(hidden_dim=hidden_dim, ffn_dim=ffn_dim, num_experts=num_experts)
+    placement = ExpertPlacement(owner_rank_by_expert=tuple(owner_by_expert), num_ep_ranks=world_size)
+
+    expert_indices = torch.tensor([list(row) for row in assignments], dtype=torch.long)
+    weight_tensor = torch.tensor([list(row) for row in weights], dtype=torch.float32)
+    router_output = TopKRouterOutput(expert_indices=expert_indices, weights=weight_tensor)
+
+    config = DistributedEPConfig(backend="gloo", world_size=world_size, rank=rank, device="cpu")
+
+    with torch.no_grad():
+        sharded_output, sharded_trace = run_distributed_topk_ep_moe(
+            inputs, router_output, model.experts, placement, config=config, capacity_factor=capacity_factor
+        )
+        replicated_output, _ = run_distributed_topk_ep_moe(
+            inputs,
+            router_output,
+            model.experts,
+            placement,
+            config=config,
+            capacity_factor=capacity_factor,
+            replicate_output=True,
+        )
+        reference_output, ref_trace = model(inputs, router_output, capacity_factor=capacity_factor)
+
+    return {
+        "rank": rank,
+        "sharded": sharded_output,
+        "sharded_token_indices": sharded_trace.output_token_indices.cpu(),
+        "replicated": replicated_output,
+        "reference": reference_output,
+        "owned_experts": sharded_trace.owned_experts,
+        "capacity": sharded_trace.capacity,
+        "num_local_dropped": sharded_trace.num_local_dropped,
+        "ref_num_dropped": ref_trace.num_dropped,
         "send_counts": sharded_trace.send_plan.send_counts_by_rank.cpu(),
         "recv_counts": sharded_trace.dispatch_counts.recv_counts_by_rank.cpu(),
     }

@@ -8,7 +8,15 @@ import torch.distributed as dist
 from torch import nn
 
 from nano_moe_ep.dispatch_combine import build_logical_ep_layout, build_token_assignments
-from nano_moe_ep.types import EPContext, ExecutionMode, ExpertPlacement, RouterOutput, TokenLayout
+from nano_moe_ep.routing.capacity import build_capacity_mask, compute_expert_capacity
+from nano_moe_ep.types import (
+    EPContext,
+    ExecutionMode,
+    ExpertPlacement,
+    RouterOutput,
+    TokenLayout,
+    TopKRouterOutput,
+)
 
 
 def _is_integer_tensor(tensor: torch.Tensor) -> bool:
@@ -638,6 +646,269 @@ def run_distributed_ep_moe(
         return_counts=return_counts,
         owned_experts=expert_placement.experts_for_rank(config.rank),
         returned_token_indices=returned_token_indices,
+        output_token_indices=output_token_indices,
+        replicate_output=replicate_output,
+    )
+
+
+@dataclass(frozen=True)
+class DistributedTopKPayloadPlan:
+    """Local source-rank payload for the distributed top-k path (one row per kept assignment)."""
+
+    send_counts_by_rank: torch.Tensor
+    send_offsets: torch.Tensor
+    token_indices: torch.Tensor
+    expert_ids: torch.Tensor
+    routing_weights: torch.Tensor
+
+    def __post_init__(self) -> None:
+        if self.send_counts_by_rank.ndim != 1 or not _is_integer_tensor(self.send_counts_by_rank):
+            raise ValueError("send_counts_by_rank must be a 1D integer tensor")
+        if (self.send_counts_by_rank < 0).any().item():
+            raise ValueError("send_counts_by_rank must be non-negative")
+        if self.send_offsets.shape != (self.send_counts_by_rank.numel() + 1,):
+            raise ValueError("send_offsets must have shape [world_size + 1]")
+        if self.token_indices.ndim != 1 or self.expert_ids.ndim != 1:
+            raise ValueError("token_indices and expert_ids must be 1D tensors")
+        if self.token_indices.numel() != self.expert_ids.numel():
+            raise ValueError("token_indices and expert_ids must have equal length")
+        if not _is_integer_tensor(self.token_indices) or not _is_integer_tensor(self.expert_ids):
+            raise ValueError("token_indices and expert_ids must use integer dtypes")
+        if self.routing_weights.shape != (self.token_indices.numel(), 1):
+            raise ValueError("routing_weights must have shape [num_assignments, 1]")
+        if not self.routing_weights.dtype.is_floating_point:
+            raise ValueError("routing_weights must use a floating dtype")
+        if self.send_offsets[-1].item() != self.token_indices.numel():
+            raise ValueError("send_offsets must end at the assignment count")
+
+
+@dataclass(frozen=True)
+class DistributedTopKTrace:
+    """Rank-local trace for the distributed top-k EP forward path."""
+
+    config: DistributedEPConfig
+    ep_context: EPContext
+    send_plan: DistributedTopKPayloadPlan
+    dispatch_counts: CountExchange
+    return_counts: CountExchange
+    owned_experts: tuple[int, ...]
+    capacity: int | None
+    num_local_dropped: int
+    output_token_indices: torch.Tensor
+    replicate_output: bool
+
+
+def build_distributed_topk_payload_plan(
+    router_output: TopKRouterOutput,
+    expert_placement: ExpertPlacement,
+    keep_mask: torch.Tensor,
+    *,
+    source_rank: int,
+    world_size: int,
+    device: torch.device | str | None = None,
+) -> DistributedTopKPayloadPlan:
+    """Build this source rank's kept (token, slot) assignments for top-k dispatch."""
+
+    _validate_rank_world(source_rank, world_size)
+    if expert_placement.num_ep_ranks != world_size:
+        raise ValueError("world_size must match ExpertPlacement num_ep_ranks")
+    if keep_mask.shape != router_output.expert_indices.shape:
+        raise ValueError("keep_mask must match router expert_indices shape")
+    target_device = torch.device(device) if device is not None else router_output.expert_indices.device
+
+    num_tokens, k = router_output.expert_indices.shape
+    records: list[tuple[int, int, int, float]] = []
+    for token_index in range(num_tokens):
+        if token_index % world_size != source_rank:
+            continue
+        for slot in range(k):
+            if not bool(keep_mask[token_index, slot].item()):
+                continue
+            expert_id = int(router_output.expert_indices[token_index, slot].item())
+            dest_rank = expert_placement.owner_rank(expert_id)
+            weight = float(router_output.weights[token_index, slot].item())
+            records.append((dest_rank, expert_id, token_index, weight))
+
+    records.sort(key=lambda record: (record[0], record[1], record[2]))
+    send_counts = torch.zeros(world_size, dtype=torch.long, device=target_device)
+    for dest_rank, _expert_id, _token_index, _weight in records:
+        send_counts[dest_rank] += 1
+    send_offsets = _prefix_offsets(send_counts)
+
+    token_indices = torch.tensor([r[2] for r in records], dtype=torch.long, device=target_device)
+    expert_ids = torch.tensor([r[1] for r in records], dtype=torch.long, device=target_device)
+    if records:
+        routing_weights = torch.tensor(
+            [[r[3]] for r in records], dtype=router_output.weights.dtype, device=target_device
+        )
+    else:
+        routing_weights = router_output.weights.new_empty((0, 1)).to(device=target_device)
+    return DistributedTopKPayloadPlan(
+        send_counts_by_rank=send_counts,
+        send_offsets=send_offsets,
+        token_indices=token_indices,
+        expert_ids=expert_ids,
+        routing_weights=routing_weights,
+    )
+
+
+def apply_sharded_topk_combine(
+    expert_outputs: torch.Tensor,
+    token_indices: torch.Tensor,
+    routing_weights: torch.Tensor,
+    owned_token_indices: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sum each owned source token's kept-slot contributions into a dense shard.
+
+    ``owned_token_indices`` is this rank's full ascending set of source tokens.
+    A token with every slot dropped keeps a zero row. Unlike the top-1 sharded
+    combine, duplicate token indices are expected (one per kept slot) and summed.
+    """
+
+    if expert_outputs.ndim != 2:
+        raise ValueError("expert_outputs must have shape [num_assignments, hidden_dim]")
+    if token_indices.shape != (expert_outputs.shape[0],):
+        raise ValueError("token_indices must have one entry per expert output")
+    if routing_weights.shape != (expert_outputs.shape[0], 1):
+        raise ValueError("routing_weights must have shape [num_assignments, 1]")
+    if not routing_weights.dtype.is_floating_point:
+        raise ValueError("routing_weights must use a floating dtype")
+    if not torch.isfinite(routing_weights).all().item():
+        raise ValueError("routing_weights must be finite")
+    if owned_token_indices.ndim != 1 or not _is_integer_tensor(owned_token_indices):
+        raise ValueError("owned_token_indices must be a 1D integer tensor")
+
+    output = torch.zeros(
+        (owned_token_indices.numel(), expert_outputs.shape[1]),
+        dtype=expert_outputs.dtype,
+        device=expert_outputs.device,
+    )
+    if expert_outputs.shape[0] > 0:
+        owned = owned_token_indices.to(device=expert_outputs.device)
+        positions = torch.searchsorted(owned, token_indices.to(device=expert_outputs.device))
+        if (positions >= owned.numel()).any().item() or not torch.equal(
+            owned.index_select(0, positions), token_indices.to(device=expert_outputs.device)
+        ):
+            raise ValueError("token_indices must be a subset of owned_token_indices")
+        weighted = expert_outputs * routing_weights.to(device=expert_outputs.device, dtype=expert_outputs.dtype)
+        output.index_add_(0, positions, weighted)
+    return output, owned_token_indices
+
+
+def _validate_returned_topk_tokens(token_indices: torch.Tensor, *, num_tokens: int, config: DistributedEPConfig) -> None:
+    owned = source_token_indices(
+        num_tokens, rank=config.rank, world_size=config.world_size, device=token_indices.device
+    )
+    if token_indices.numel() > 0:
+        if not torch.isin(token_indices, owned).all().item():
+            raise ValueError("returned token indices must belong to this rank's source-token shard")
+
+
+def run_distributed_topk_ep_moe(
+    inputs: torch.Tensor,
+    router_output: TopKRouterOutput,
+    experts: Sequence[nn.Module],
+    expert_placement: ExpertPlacement,
+    *,
+    config: DistributedEPConfig | None = None,
+    group: dist.ProcessGroup | None = None,
+    capacity_factor: float | None = None,
+    replicate_output: bool = False,
+) -> tuple[torch.Tensor, DistributedTopKTrace]:
+    """Run the distributed top-k EP forward path with optional capacity dropping.
+
+    The capacity mask is computed identically on every rank from the replicated
+    router output, so dropping matches the single-process reference exactly. Each
+    token's kept slots all originate on its owner rank and return there, where
+    they are summed. Output is sharded by default; ``replicate_output=True``
+    assembles the full output with a final ``all_reduce`` (for comparison).
+    """
+
+    if config is None:
+        config = DistributedEPConfig.from_process_group(group=group, device=inputs.device)
+    if not dist.is_available() or not dist.is_initialized():
+        raise ValueError("torch.distributed must be initialized")
+    if config.rank != dist.get_rank(group=group) or config.world_size != dist.get_world_size(group=group):
+        raise ValueError("DistributedEPConfig must match the initialized process group")
+    if not isinstance(inputs, torch.Tensor) or inputs.ndim != 2:
+        raise ValueError("inputs must have shape [num_tokens, hidden_dim]")
+    if not isinstance(router_output, TopKRouterOutput):
+        raise ValueError("router_output must be a TopKRouterOutput")
+    if not isinstance(expert_placement, ExpertPlacement):
+        raise ValueError("expert_placement must be an ExpertPlacement")
+    if len(experts) != expert_placement.num_experts:
+        raise ValueError("experts length must match expert placement num_experts")
+    if expert_placement.num_ep_ranks != config.world_size:
+        raise ValueError("ExpertPlacement num_ep_ranks must match distributed world_size")
+    if router_output.num_tokens != inputs.shape[0]:
+        raise ValueError("router_output num_tokens must match inputs")
+    if inputs.device != config.device:
+        raise ValueError("inputs device must match DistributedEPConfig device")
+
+    num_tokens = inputs.shape[0]
+    num_experts = expert_placement.num_experts
+    if capacity_factor is None:
+        keep_mask = torch.ones_like(router_output.expert_indices, dtype=torch.bool)
+        capacity = None
+    else:
+        capacity = compute_expert_capacity(num_tokens, num_experts, router_output.k, capacity_factor)
+        keep_mask = build_capacity_mask(router_output, num_experts, capacity)
+
+    ep_context = config.to_ep_context()
+    ep_context.require_compatible_placement(expert_placement)
+    send_plan = build_distributed_topk_payload_plan(
+        router_output,
+        expert_placement,
+        keep_mask,
+        source_rank=config.rank,
+        world_size=config.world_size,
+        device=config.device,
+    )
+    dispatch_counts = exchange_counts(send_plan.send_counts_by_rank, group=group)
+
+    send_token_payload = inputs.index_select(0, send_plan.token_indices.to(device=inputs.device))
+    received_tokens = all_to_all_variable_tensors(send_token_payload, dispatch_counts, config=config, group=group)
+    received_token_indices = all_to_all_variable_tensors(send_plan.token_indices, dispatch_counts, config=config, group=group)
+    received_expert_ids = all_to_all_variable_tensors(send_plan.expert_ids, dispatch_counts, config=config, group=group)
+    received_routing_weights = all_to_all_variable_tensors(send_plan.routing_weights, dispatch_counts, config=config, group=group)
+
+    local_expert_outputs = execute_received_experts(
+        received_tokens, received_expert_ids, experts, expert_placement, rank=config.rank
+    )
+
+    return_counts = reverse_count_exchange(dispatch_counts, rank=config.rank)
+    returned_outputs = all_to_all_variable_tensors(local_expert_outputs, return_counts, config=config, group=group)
+    returned_token_indices = all_to_all_variable_tensors(received_token_indices, return_counts, config=config, group=group)
+    returned_routing_weights = all_to_all_variable_tensors(received_routing_weights, return_counts, config=config, group=group)
+    _validate_returned_topk_tokens(returned_token_indices, num_tokens=num_tokens, config=config)
+
+    owned = source_token_indices(num_tokens, rank=config.rank, world_size=config.world_size, device=inputs.device)
+    if replicate_output:
+        output = torch.zeros((num_tokens, inputs.shape[1]), dtype=returned_outputs.dtype, device=inputs.device)
+        if returned_outputs.shape[0] > 0:
+            weighted = returned_outputs * returned_routing_weights.to(device=output.device, dtype=output.dtype)
+            output.index_add_(0, returned_token_indices.to(device=output.device), weighted)
+        dist.all_reduce(output, op=dist.ReduceOp.SUM, group=group)
+        output_token_indices = torch.arange(num_tokens, dtype=torch.long, device=output.device)
+    else:
+        output, output_token_indices = apply_sharded_topk_combine(
+            returned_outputs, returned_token_indices, returned_routing_weights, owned
+        )
+
+    if owned.numel() > 0:
+        local_keep = keep_mask[owned.to(device=keep_mask.device)]
+    else:
+        local_keep = keep_mask.new_zeros((0, router_output.k))
+    num_local_dropped = int((~local_keep).sum().item())
+    return output, DistributedTopKTrace(
+        config=config,
+        ep_context=ep_context,
+        send_plan=send_plan,
+        dispatch_counts=dispatch_counts,
+        return_counts=return_counts,
+        owned_experts=expert_placement.experts_for_rank(config.rank),
+        capacity=capacity,
+        num_local_dropped=num_local_dropped,
         output_token_indices=output_token_indices,
         replicate_output=replicate_output,
     )

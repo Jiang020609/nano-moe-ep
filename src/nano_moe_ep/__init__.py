@@ -7,8 +7,11 @@ from nano_moe_ep.distributed_ep import (
     DistributedPayloadPlan,
     apply_partial_combine,
     apply_sharded_combine,
+    apply_sharded_topk_combine,
     build_distributed_payload_plan,
+    build_distributed_topk_payload_plan,
     run_distributed_ep_moe,
+    run_distributed_topk_ep_moe,
     source_token_indices,
 )
 from nano_moe_ep.dispatch_combine import LogicalEPTrace, run_logical_ep_moe
@@ -55,13 +58,16 @@ __all__ = [
     "TopKRouterOutput",
     "apply_partial_combine",
     "apply_sharded_combine",
+    "apply_sharded_topk_combine",
     "build_capacity_mask",
     "build_distributed_payload_plan",
+    "build_distributed_topk_payload_plan",
     "compute_expert_capacity",
     "expert_load",
     "route_topk_explicit",
     "route_topk_round_robin",
     "run_distributed_ep_moe",
+    "run_distributed_topk_ep_moe",
     "run_logical_ep_moe",
     "source_token_indices",
 ]

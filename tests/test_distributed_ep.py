@@ -6,11 +6,13 @@ from nano_moe_ep.distributed_ep import (
     DistributedEPConfig,
     apply_partial_combine,
     apply_sharded_combine,
+    apply_sharded_topk_combine,
     build_distributed_payload_plan,
+    build_distributed_topk_payload_plan,
     reverse_count_exchange,
     source_token_indices,
 )
-from nano_moe_ep.routing import route_explicit
+from nano_moe_ep.routing import route_explicit, route_topk_explicit
 from nano_moe_ep.types import ExecutionMode, ExpertPlacement, RouterOutput
 
 
@@ -122,6 +124,50 @@ def test_sharded_combine_handles_empty_shard():
 def test_sharded_combine_rejects_duplicate_token_indices():
     with pytest.raises(ValueError, match="duplicates"):
         apply_sharded_combine(torch.ones(2, 3), torch.tensor([1, 1]), torch.ones(2, 1))
+
+
+def test_topk_payload_plan_expands_slots_and_groups_by_destination():
+    router = route_topk_explicit([[0, 2], [1, 3], [0, 3]], num_experts=4)
+    placement = ExpertPlacement.from_rank_experts({0: [0, 1], 1: [2, 3]}, num_experts=4, num_ep_ranks=2)
+    keep = torch.ones_like(router.expert_indices, dtype=torch.bool)
+
+    plan = build_distributed_topk_payload_plan(router, placement, keep, source_rank=0, world_size=2)
+
+    # Source rank 0 owns tokens 0 and 2; each has one expert on each rank.
+    torch.testing.assert_close(plan.send_counts_by_rank, torch.tensor([2, 2]))
+    torch.testing.assert_close(plan.token_indices, torch.tensor([0, 2, 0, 2]))
+    torch.testing.assert_close(plan.expert_ids, torch.tensor([0, 0, 2, 3]))
+
+
+def test_topk_payload_plan_drops_masked_assignments():
+    router = route_topk_explicit([[0, 2], [0, 3]], num_experts=4)
+    placement = ExpertPlacement.from_rank_experts({0: [0, 1, 2, 3]}, num_experts=4, num_ep_ranks=1)
+    keep = torch.tensor([[True, False], [False, True]])
+
+    plan = build_distributed_topk_payload_plan(router, placement, keep, source_rank=0, world_size=1)
+
+    # world_size=1: both tokens belong to rank 0; only kept slots survive.
+    torch.testing.assert_close(plan.token_indices, torch.tensor([0, 1]))
+    torch.testing.assert_close(plan.expert_ids, torch.tensor([0, 3]))
+
+
+def test_sharded_topk_combine_sums_kept_slots_per_token():
+    expert_outputs = torch.tensor([[1.0, 1.0], [2.0, 2.0], [10.0, 10.0]])
+    token_indices = torch.tensor([0, 2, 0])  # token 0 has two contributions
+    weights = torch.tensor([[1.0], [1.0], [1.0]])
+    owned = torch.tensor([0, 2, 4])
+
+    output, returned_owned = apply_sharded_topk_combine(expert_outputs, token_indices, weights, owned)
+
+    torch.testing.assert_close(output, torch.tensor([[11.0, 11.0], [2.0, 2.0], [0.0, 0.0]]))
+    torch.testing.assert_close(returned_owned, owned)
+
+
+def test_sharded_topk_combine_rejects_token_outside_owned_set():
+    with pytest.raises(ValueError, match="subset of owned"):
+        apply_sharded_topk_combine(
+            torch.ones(1, 2), torch.tensor([3]), torch.ones(1, 1), torch.tensor([0, 2, 4])
+        )
 
 
 def test_distributed_config_exports_distributed_ep_context():
