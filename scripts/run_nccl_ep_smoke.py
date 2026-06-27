@@ -102,46 +102,56 @@ def main() -> int:
         num_tokens = 64 * world_size
         config = DistributedEPConfig(backend=backend, world_size=world_size, rank=rank, device=device)
 
-        # Identical inputs/weights on every rank: build on CPU under a fixed seed, then move.
+        # The reference oracles are single-process CPU paths; the distributed paths
+        # run on `device`. Both expert sets are built from the same seed, so their
+        # weights are identical, and every rank sees identical inputs/routers.
         torch.manual_seed(SEED)
-        model_top1 = ReferenceMoEFFN(HIDDEN_DIM, FFN_DIM, num_experts).to(device)
+        ref_model_top1 = ReferenceMoEFFN(HIDDEN_DIM, FFN_DIM, num_experts)
         torch.manual_seed(SEED)
-        model_topk = TopKReferenceMoEFFN(HIDDEN_DIM, FFN_DIM, num_experts).to(device)
+        ref_model_topk = TopKReferenceMoEFFN(HIDDEN_DIM, FFN_DIM, num_experts)
         torch.manual_seed(SEED)
-        inputs = torch.randn(num_tokens, HIDDEN_DIM).to(device)
+        dist_model_top1 = ReferenceMoEFFN(HIDDEN_DIM, FFN_DIM, num_experts).to(device)
+        torch.manual_seed(SEED)
+        dist_model_topk = TopKReferenceMoEFFN(HIDDEN_DIM, FFN_DIM, num_experts).to(device)
+        torch.manual_seed(SEED)
+        inputs_cpu = torch.randn(num_tokens, HIDDEN_DIM)
+        inputs = inputs_cpu.to(device)
 
         contiguous = contiguous_placement(num_experts, world_size)
         topk_router = _build_skewed_topk_router(num_tokens, num_experts, k=2)
         balanced = balanced_placement(expert_load(topk_router, num_experts), world_size)
-        top1_router = route_round_robin(num_tokens, num_experts, device=device)
+        top1_router = route_round_robin(num_tokens, num_experts)
 
         results = []
         with torch.no_grad():
-            # 1. top-1 distributed vs logical reference.
+            # 1. top-1 distributed (on device) vs logical reference (on CPU).
             dist_top1, _ = run_distributed_ep_moe(
-                inputs, top1_router, model_top1.experts, contiguous, config=config, replicate_output=True
+                inputs, top1_router, dist_model_top1.experts, contiguous, config=config, replicate_output=True
             )
-            ref_top1, _ = run_logical_ep_moe(inputs, top1_router, model_top1.experts, contiguous)
+            ref_top1, _ = run_logical_ep_moe(inputs_cpu, top1_router, ref_model_top1.experts, contiguous)
+            dist_top1 = dist_top1.cpu()
             results.append(("top-1", _max_abs_error(dist_top1, ref_top1),
                             torch.allclose(dist_top1, ref_top1, rtol=RTOL, atol=ATOL)))
 
             # 2. top-k, no capacity, balanced placement.
             dist_topk, _ = run_distributed_topk_ep_moe(
-                inputs, topk_router, model_topk.experts, balanced, config=config, replicate_output=True
+                inputs, topk_router, dist_model_topk.experts, balanced, config=config, replicate_output=True
             )
-            ref_topk, _ = model_topk(inputs, topk_router)
+            ref_topk, _ = ref_model_topk(inputs_cpu, topk_router)
+            dist_topk = dist_topk.cpu()
             results.append(("top-k", _max_abs_error(dist_topk, ref_topk),
                             torch.allclose(dist_topk, ref_topk, rtol=RTOL, atol=ATOL)))
 
             # 3. top-k with capacity dropping, balanced placement.
             dist_cap, trace_cap = run_distributed_topk_ep_moe(
-                inputs, topk_router, model_topk.experts, balanced, config=config,
+                inputs, topk_router, dist_model_topk.experts, balanced, config=config,
                 capacity_factor=1.25, replicate_output=True,
             )
-            ref_cap, ref_trace = model_topk(inputs, topk_router, capacity_factor=1.25)
+            ref_cap, ref_trace = ref_model_topk(inputs_cpu, topk_router, capacity_factor=1.25)
             dropped = torch.tensor(trace_cap.num_local_dropped, device=device)
             dist.all_reduce(dropped, op=dist.ReduceOp.SUM)
             drops_match = int(dropped.item()) == ref_trace.num_dropped
+            dist_cap = dist_cap.cpu()
             results.append(("top-k+cap", _max_abs_error(dist_cap, ref_cap),
                             torch.allclose(dist_cap, ref_cap, rtol=RTOL, atol=ATOL) and drops_match))
 
