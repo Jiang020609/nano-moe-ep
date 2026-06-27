@@ -22,6 +22,8 @@ It does not contain custom CUDA kernels, raw NCCL calls, Triton, backward logic,
 - [Design decisions](docs/design-decisions.md)
 - [Implementation roadmap](docs/implementation-roadmap.md)
 - [Test strategy](docs/test-strategy.md)
+- [Benchmark report](docs/benchmark-report.md)
+- [Comparison to production MoE/EP systems](docs/comparison.md)
 
 ## Milestones
 
