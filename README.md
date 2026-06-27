@@ -42,13 +42,19 @@ It does not contain custom CUDA kernels, raw NCCL calls, Triton, backward logic,
 python -m pytest -q
 ```
 
-Manual Stage 3 smoke:
+Manual multi-GPU smoke (any rank count, NCCL when available, else Gloo):
 
 ```bash
-torchrun --standalone --nproc_per_node=2 scripts/run_stage3_2gpu_smoke.py
+torchrun --standalone --nproc_per_node=8 scripts/run_nccl_ep_smoke.py
 ```
 
-The smoke uses NCCL only when CUDA/NCCL and two devices are available; otherwise it falls back to a CPU/Gloo correctness smoke. It prints per-rank owned experts, send/receive counts, maximum absolute error versus the local reference, and PASS/FAIL.
+This validates all three distributed paths against the single-process reference
+on real ranks: top-1 EP, top-k EP (no capacity), and top-k EP with capacity
+dropping, the last two under a load-aware `balanced_placement`. Each rank prints
+its backend/device, the contiguous vs. balanced max-rank load, and per-check max
+absolute error and PASS/FAIL; rank 0 prints an overall result. Set
+`NANO_MOE_EP_BACKEND=gloo` to force the CPU fallback. The earlier top-1-only
+2-GPU smoke remains at `scripts/run_stage3_2gpu_smoke.py`.
 
 ## Combine communication
 
